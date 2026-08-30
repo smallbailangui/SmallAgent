@@ -1,6 +1,6 @@
 SmallAgent
 
-Git 仓库地址：待绑定公开远程仓库后填写（创建后替换为 https://github.com/用户名/仓库名）。
+Git 仓库地址：https://github.com/smallbailangui/SmallAgent
 
 运行方式：
 1. 安装 Python 3.10+。
