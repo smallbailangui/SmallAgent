@@ -4,7 +4,7 @@ Git 仓库地址：待绑定公开远程仓库后填写（创建后替换为 htt
 
 运行方式：
 1. 安装 Python 3.10+。
-2. 设置环境变量 OPENAI_API_KEY；可选设置 SMALLAGENT_MODEL、OPENAI_BASE_URL。
+2. 参考 .env.example 设置环境变量 OPENAI_API_KEY；可选设置 SMALLAGENT_MODEL、OPENAI_BASE_URL。
 3. 执行：python -m smallagent "你的编程任务"
 4. 如需保存演示记录，加 --history-file tmp/history.json。
 
