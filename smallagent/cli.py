@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .agent import AgentConfig, CodingAgent
@@ -27,6 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=12,
         help="Maximum model-tool iterations before stopping.",
     )
+    parser.add_argument(
+        "--history-file",
+        help="Optional JSON file for saving the full conversation and tool observations.",
+    )
     return parser
 
 
@@ -41,4 +46,13 @@ def main(argv: list[str] | None = None) -> int:
 
     print(result.final_message)
     print(f"\nSteps: {result.steps}")
+    if args.history_file:
+        history_path = Path(args.history_file).resolve()
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text(
+            json.dumps(result.history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"History: {history_path}")
     return 0

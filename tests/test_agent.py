@@ -42,6 +42,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(result.final_message, "created hello.txt")
             self.assertEqual((Path(tmp) / "hello.txt").read_text(encoding="utf-8"), "hi")
             self.assertEqual(result.steps, 2)
+            self.assertIn("OBSERVATION", result.history[-2]["content"])
 
 
 class ToolTests(unittest.TestCase):
