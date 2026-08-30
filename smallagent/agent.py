@@ -41,8 +41,15 @@ def parse_agent_response(text: str) -> dict[str, Any]:
 
     try:
         data = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise ResponseParseError(f"expected a JSON object: {exc}") from exc
+    except json.JSONDecodeError:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start == -1 or end <= start:
+            raise ResponseParseError("expected a JSON object")
+        try:
+            data = json.loads(candidate[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise ResponseParseError(f"expected a JSON object: {exc}") from exc
 
     if not isinstance(data, dict):
         raise ResponseParseError("top-level response must be a JSON object")

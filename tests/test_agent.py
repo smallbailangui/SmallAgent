@@ -26,6 +26,10 @@ class AgentTests(unittest.TestCase):
             parse_agent_response('```json\n{"type":"tool","tool":"get_cwd","args":{}}\n```')["tool"],
             "get_cwd",
         )
+        self.assertEqual(
+            parse_agent_response('Here is the action: {"type":"final","message":"done"}')["message"],
+            "done",
+        )
 
     def test_agent_runs_tool_then_finishes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
