@@ -23,7 +23,7 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 - 加强安全策略：扩展 `ToolRegistry._check_command`。
 - 扩展记忆：替换 `ShortTermMemory` 为文件存储、数据库或向量检索。
 - 扩展规划：替换 `Planner`，加入任务分解、检查点和回滚策略。
-- 扩展决策：替换 `DecisionPolicy`，加入风险分级、人工确认和工具白名单。
+- 扩展决策：`DecisionPolicy` 已输出基础风险等级，后续可加入人工确认和工具白名单。
 
 ## 边界约束
 

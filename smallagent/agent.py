@@ -116,7 +116,12 @@ class CodingAgent:
                 messages.append(
                     {
                         "role": "user",
-                        "content": self._observation(False, "decision", "", decision.reason),
+                        "content": self._observation(
+                            False,
+                            "decision",
+                            "",
+                            f"{decision.reason}；风险等级：{decision.risk}",
+                        ),
                     }
                 )
                 continue

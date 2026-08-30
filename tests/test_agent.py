@@ -116,6 +116,13 @@ class ArchitectureTests(unittest.TestCase):
         self.assertIn("运行验证命令", plan.to_prompt())
         self.assertIn("失败，需要调整", plan.to_prompt())
 
+    def test_decision_policy_classifies_tool_risk(self) -> None:
+        policy = DecisionPolicy()
+
+        self.assertEqual(policy.decide({"type": "tool", "tool": "read_file", "args": {}}).risk, "low")
+        self.assertEqual(policy.decide({"type": "tool", "tool": "write_file", "args": {}}).risk, "medium")
+        self.assertEqual(policy.decide({"type": "tool", "tool": "run_shell", "args": {}}).risk, "high")
+
 
 class ToolTests(unittest.TestCase):
     def test_paths_cannot_escape_workspace(self) -> None:
