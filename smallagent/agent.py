@@ -7,6 +7,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .decision import DecisionPolicy
+from .memory import ShortTermMemory
+from .perception import Perception
+from .planning import Plan, Planner
 from .prompts import SYSTEM_PROMPT
 from .tools import ToolRegistry
 
@@ -66,18 +70,28 @@ class CodingAgent:
         client: ChatClient,
         tools: ToolRegistry,
         config: AgentConfig | None = None,
+        planner: Planner | None = None,
+        memory: ShortTermMemory | None = None,
+        decision_policy: DecisionPolicy | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
         self.config = config or AgentConfig()
+        self.planner = planner or Planner()
+        self.memory = memory or ShortTermMemory()
+        self.decision_policy = decision_policy or DecisionPolicy()
 
     def run(self, task: str) -> AgentResult:
+        perception = Perception(task, self.tools.workspace)
+        plan = self.planner.create_initial_plan(task)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": self._state_prompt(perception, plan)},
             {"role": "user", "content": task},
         ]
 
         for step in range(1, self.config.max_steps + 1):
+            perception.observe_step(step)
             raw_response = self.client.complete(messages)
             messages.append({"role": "assistant", "content": raw_response})
 
@@ -93,6 +107,16 @@ class CodingAgent:
                             "",
                             f"{exc}. Reply with only the required JSON object.",
                         ),
+                    }
+                )
+                continue
+
+            decision = self.decision_policy.decide(response)
+            if not decision.allowed:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": self._observation(False, "decision", "", decision.reason),
                     }
                 )
                 continue
@@ -113,6 +137,9 @@ class CodingAgent:
             else:
                 result = self.tools.run(tool_name, args)
 
+            perception.observe_tool_result(result)
+            self.memory.remember_tool_result(result)
+            plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
             messages.append(
                 {
                     "role": "user",
@@ -124,6 +151,7 @@ class CodingAgent:
                     ),
                 }
             )
+            messages.append({"role": "user", "content": self._state_prompt(perception, plan)})
 
         return AgentResult(
             f"Stopped after {self.config.max_steps} steps without a final answer.",
@@ -135,3 +163,12 @@ class CodingAgent:
     def _observation(ok: bool, tool: str, output: str, error: str) -> str:
         payload = {"ok": ok, "tool": tool, "output": output, "error": error}
         return "OBSERVATION:\n" + json.dumps(payload, ensure_ascii=False)
+
+    def _state_prompt(self, perception: Perception, plan: Plan) -> str:
+        return "\n\n".join(
+            [
+                perception.state.to_prompt(),
+                plan.to_prompt(),
+                self.memory.to_prompt(),
+            ]
+        )

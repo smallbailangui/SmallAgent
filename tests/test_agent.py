@@ -7,6 +7,10 @@ from pathlib import Path
 
 from smallagent.agent import AgentConfig, CodingAgent, parse_agent_response
 from smallagent.config import load_dotenv
+from smallagent.decision import DecisionPolicy
+from smallagent.memory import ShortTermMemory
+from smallagent.perception import Perception
+from smallagent.planning import Planner
 from smallagent.tools import ToolRegistry
 
 
@@ -48,7 +52,69 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(result.final_message, "created hello.txt")
             self.assertEqual((Path(tmp) / "hello.txt").read_text(encoding="utf-8"), "hi")
             self.assertEqual(result.steps, 2)
-            self.assertIn("OBSERVATION", result.history[-2]["content"])
+            self.assertTrue(any("OBSERVATION" in item["content"] for item in result.history))
+
+    def test_agent_injects_perception_plan_and_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"完成"}',
+                ]
+            )
+            memory = ShortTermMemory()
+            agent = CodingAgent(
+                client,
+                ToolRegistry(Path(tmp)),
+                AgentConfig(max_steps=3),
+                planner=Planner(),
+                memory=memory,
+                decision_policy=DecisionPolicy(),
+            )
+
+            result = agent.run("查看目录")
+
+            joined_history = "\n".join(item["content"] for item in result.history)
+            self.assertIn("感知状态", joined_history)
+            self.assertIn("当前计划", joined_history)
+            self.assertIn("短期记忆", joined_history)
+            self.assertEqual(len(memory.items), 1)
+
+    def test_decision_rejects_invalid_tool_args(self) -> None:
+        client = FakeClient(
+            [
+                '{"type":"tool","tool":"write_file","args":"bad"}',
+                '{"type":"final","message":"已停止"}',
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = CodingAgent(client, ToolRegistry(Path(tmp)), AgentConfig(max_steps=3))
+            result = agent.run("错误动作")
+
+            joined_history = "\n".join(item["content"] for item in result.history)
+            self.assertIn("decision", joined_history)
+            self.assertIn("工具参数必须是对象", joined_history)
+
+
+class ArchitectureTests(unittest.TestCase):
+    def test_perception_updates_from_tool_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            perception = Perception("任务", Path(tmp))
+            perception.observe_step(2)
+            perception.observe_tool_result({"tool": "read_file", "ok": True, "output": "内容", "error": ""})
+
+            prompt = perception.state.to_prompt()
+
+            self.assertIn("当前轮数：2", prompt)
+            self.assertIn("read_file 成功", prompt)
+
+    def test_planner_keeps_extendable_plan(self) -> None:
+        planner = Planner()
+        plan = planner.create_initial_plan("修复测试")
+        planner.update_after_tool(plan, "run_shell", False)
+
+        self.assertIn("运行验证命令", plan.to_prompt())
+        self.assertIn("失败，需要调整", plan.to_prompt())
 
 
 class ToolTests(unittest.TestCase):
