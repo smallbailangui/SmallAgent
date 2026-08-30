@@ -1,4 +1,4 @@
-"""Agent loop and response parsing."""
+"""智能体循环与模型响应解析。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .tools import ToolRegistry
 
 class ChatClient(Protocol):
     def complete(self, messages: list[dict[str, str]]) -> str:
-        """Return the next assistant message."""
+        """返回下一条模型消息。"""
 
 
 @dataclass
@@ -29,11 +29,11 @@ class AgentResult:
 
 
 class ResponseParseError(ValueError):
-    """Raised when the model response cannot be parsed as an agent command."""
+    """模型输出无法解析为智能体动作时抛出。"""
 
 
 def parse_agent_response(text: str) -> dict[str, Any]:
-    """Parse the model response JSON, accepting a fenced JSON block as a convenience."""
+    """解析模型输出的 JSON；同时兼容 Markdown 代码块。"""
     candidate = text.strip()
     fence_match = re.search(r"```(?:json)?\s*(.*?)```", candidate, re.DOTALL | re.IGNORECASE)
     if fence_match:
@@ -59,7 +59,7 @@ def parse_agent_response(text: str) -> dict[str, Any]:
 
 
 class CodingAgent:
-    """A small ReAct-style coding agent with local tools and explicit stopping."""
+    """一个带本地工具和显式停止条件的小型编程智能体。"""
 
     def __init__(
         self,

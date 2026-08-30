@@ -1,7 +1,7 @@
 [project]
 name = "smallagent"
 version = "0.1.0"
-description = "A minimal coding agent implemented without agent frameworks."
+description = "一个不依赖 agent 框架的最小编程智能体。"
 requires-python = ">=3.10"
 dependencies = []
 

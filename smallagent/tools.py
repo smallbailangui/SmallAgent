@@ -1,4 +1,4 @@
-"""Local tools exposed to the model."""
+"""暴露给模型使用的本地工具。"""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class ToolRegistry:
             return self._result(False, name, "", f"unknown tool: {name}")
         try:
             return tool(args)
-        except Exception as exc:  # noqa: BLE001 - tool errors must be returned to the agent
+        except Exception as exc:  # noqa: BLE001 - 工具异常需要转成观察结果反馈给智能体
             return self._result(False, name, "", f"{type(exc).__name__}: {exc}")
 
     def get_cwd(self, args: dict[str, Any]) -> ToolResult:

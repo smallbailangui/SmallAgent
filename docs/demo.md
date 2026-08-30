@@ -1,32 +1,32 @@
-# Demo Script
+# 演示脚本
 
-This short scenario is suitable for the required two-minute video.
+下面这个场景适合录制题目要求的 2 分钟以内视频。
 
-## Setup
+## 准备
 
-Use a clean scratch folder inside the project:
+在项目中创建一个干净的临时工作目录：
 
 ```powershell
 New-Item -ItemType Directory -Force tmp/demo-workspace
 ```
 
-Set `OPENAI_API_KEY` in the shell before recording. Keep the key off screen.
+录屏前在 `.env` 或命令行环境变量中设置 `OPENAI_API_KEY`，不要让真实 key 出现在画面里。
 
-## Task To Run
+## 运行任务
 
 ```powershell
-python -m smallagent --workspace tmp/demo-workspace --history-file tmp/demo-history.json "Create a Python function in calculator.py that adds two numbers, then create a unittest file and run the tests."
+python -m smallagent --workspace tmp/demo-workspace --history-file tmp/demo-history.json "创建 calculator.py，里面写一个 add(a, b) 函数；再创建 unittest 测试文件并运行测试。"
 ```
 
-## What To Show
+## 展示重点
 
-1. The agent reads or creates files through its local tools.
-2. The agent runs tests with `run_shell`.
-3. The final answer reports what changed.
-4. `tmp/demo-history.json` records model actions and tool observations.
+1. 智能体通过本地工具读取或创建文件。
+2. 智能体用 `run_shell` 执行测试。
+3. 最终回答会说明修改内容和验证结果。
+4. `tmp/demo-history.json` 会保存模型动作和工具观察，便于讲解运行过程。
 
-## Talking Points
+## 讲解要点
 
-- No agent framework is used.
-- The model only emits JSON actions.
-- Tool execution, path checks, command policy, history, and loop stopping are implemented locally.
+- 项目没有使用 agent 框架。
+- 模型只输出 JSON 动作。
+- 工具执行、路径检查、命令策略、历史记录和循环停止都在本地代码中实现。

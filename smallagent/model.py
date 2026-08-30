@@ -1,4 +1,4 @@
-"""OpenAI-compatible chat completion client implemented with the standard library."""
+"""基于标准库实现的 OpenAI 兼容聊天补全客户端。"""
 
 from __future__ import annotations
 

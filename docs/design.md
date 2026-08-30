@@ -1,26 +1,26 @@
-# SmallAgent Design Notes
+# SmallAgent 设计说明
 
-SmallAgent is intentionally small so every moving part can be explained in an
-interview.
+SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环节。
 
-## Runtime Flow
+## 运行流程
 
-1. `smallagent.cli` parses the task, workspace, and iteration limit.
-2. `smallagent.model` sends chat messages to an OpenAI-compatible API.
-3. `smallagent.agent` parses the model's JSON response.
-4. If the response is a tool call, `smallagent.tools` executes it locally and
-   returns an observation to the model.
-5. If the response is final or the step limit is reached, the loop stops.
+1. `smallagent.cli` 解析任务、工作目录和最大循环轮数。
+2. `smallagent.config` 从 `.env` 读取本地配置，系统环境变量优先。
+3. `smallagent.model` 调用 OpenAI 兼容的聊天补全接口。
+4. `smallagent.agent` 解析模型返回的 JSON 动作。
+5. 如果动作是工具调用，`smallagent.tools` 在本地执行并把观察结果交还给模型。
+6. 如果动作是最终回答，或达到步数上限，循环停止。
 
-## Extension Points
+## 可扩展位置
 
-- Add tools by registering a new function in `ToolRegistry.__post_init__`.
-- Swap model providers by implementing the `ChatClient` protocol.
-- Tune behavior by editing `smallagent.prompts.SYSTEM_PROMPT`.
-- Add stronger command policy checks in `ToolRegistry._check_command`.
+- 新增工具：在 `ToolRegistry.__post_init__` 中注册函数。
+- 替换模型：实现 `ChatClient` 协议即可。
+- 调整行为：修改 `smallagent.prompts.SYSTEM_PROMPT`。
+- 加强安全策略：扩展 `ToolRegistry._check_command`。
 
-## Boundaries
+## 边界约束
 
-- The project does not depend on agent frameworks or hosted code execution.
-- Files are resolved against the workspace and blocked if they escape it.
-- API keys are read from environment variables only.
+- 不依赖 LangChain、LlamaIndex、OpenAI Agents SDK 等 agent 框架。
+- 不使用服务端托管的代码执行或文件工具。
+- 文件路径必须解析在工作区内，越界访问会被拒绝。
+- API key 只从环境变量或未入库的 `.env` 中读取。

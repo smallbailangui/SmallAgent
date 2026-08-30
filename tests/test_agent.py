@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from smallagent.agent import AgentConfig, CodingAgent, parse_agent_response
+from smallagent.config import load_dotenv
 from smallagent.tools import ToolRegistry
 
 
@@ -65,6 +67,21 @@ class ToolTests(unittest.TestCase):
 
             self.assertFalse(result["ok"])
             self.assertIn("dangerous command blocked", result["error"])
+
+
+class ConfigTests(unittest.TestCase):
+    def test_load_dotenv_reads_local_api_settings_without_overwriting_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text(
+                "OPENAI_API_KEY=from-file\nSMALLAGENT_MODEL=demo-model\n",
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "from-env"}, clear=True):
+                load_dotenv(env_file)
+
+                self.assertEqual(__import__("os").environ["OPENAI_API_KEY"], "from-env")
+                self.assertEqual(__import__("os").environ["SMALLAGENT_MODEL"], "demo-model")
 
 
 if __name__ == "__main__":
