@@ -9,7 +9,10 @@ from typing import Any
 
 @dataclass
 class PerceptionState:
-    """智能体当前能看到的任务状态。"""
+    """智能体当前能看到的任务状态。
+
+    这里保存的是“压缩后的当前观察”，不是完整历史；完整历史在 AgentResult.history。
+    """
 
     task: str
     workspace: str
@@ -41,12 +44,15 @@ class Perception:
     """维护并更新智能体的感知状态。"""
 
     def __init__(self, task: str, workspace: Path) -> None:
+        """初始化任务级感知状态。"""
         self.state = PerceptionState(task=task, workspace=str(workspace))
 
     def observe_step(self, step: int) -> None:
+        """记录当前执行轮数，防止模型忘记已经迭代了多久。"""
         self.state.step = step
 
     def observe_tool_result(self, result: dict[str, Any]) -> None:
+        """把一次工具结果压缩成下一轮模型可读的感知摘要。"""
         self.state.last_tool = str(result.get("tool", ""))
         self.state.last_ok = bool(result.get("ok", False))
         output = str(result.get("output", "") or result.get("error", ""))

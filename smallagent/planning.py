@@ -24,6 +24,10 @@ class Planner:
     """生成和更新计划，后续可替换成更复杂的规划器。"""
 
     def create_initial_plan(self, task: str) -> Plan:
+        """为新任务生成通用 coding-agent 流程。
+
+        当前计划是启发式路线图，真正选择哪个工具仍由模型根据状态决定。
+        """
         return Plan(
             goal=task,
             steps=[
@@ -36,6 +40,7 @@ class Planner:
         )
 
     def update_after_tool(self, plan: Plan, tool: str, ok: bool) -> Plan:
+        """工具执行后追加一条计划进展，帮助模型理解刚才动作的结果。"""
         status = "成功" if ok else "失败，需要调整"
         plan.steps.append(f"工具 {tool} 执行{status}")
         return plan

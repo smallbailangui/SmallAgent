@@ -17,17 +17,27 @@ from .tools import ToolRegistry
 
 
 class ChatClient(Protocol):
+    """模型客户端协议。
+
+    只要对象实现 complete(messages) -> str，就可以被 CodingAgent 使用；
+    测试里会用假的 client 替代真实网络请求。
+    """
+
     def complete(self, messages: list[dict[str, str]]) -> str:
         """返回下一条模型消息。"""
 
 
 @dataclass
 class AgentConfig:
+    """agent 运行配置。"""
+
     max_steps: int = 12
 
 
 @dataclass
 class AgentResult:
+    """agent 一次运行结束后的完整结果。"""
+
     final_message: str
     steps: int
     history: list[dict[str, str]] = field(default_factory=list)
@@ -41,6 +51,7 @@ class ResponseParseError(ValueError):
 def parse_agent_response(text: str) -> dict[str, Any]:
     """解析模型输出的 JSON；同时兼容 Markdown 代码块。"""
     candidate = text.strip()
+    # 有些模型会把 JSON 包在 ```json 代码块里，这里先剥掉外层代码块。
     fence_match = re.search(r"```(?:json)?\s*(.*?)```", candidate, re.DOTALL | re.IGNORECASE)
     if fence_match:
         candidate = fence_match.group(1).strip()
@@ -48,6 +59,7 @@ def parse_agent_response(text: str) -> dict[str, Any]:
     try:
         data = json.loads(candidate)
     except json.JSONDecodeError:
+        # 兜底处理：如果模型前后多写了一点文字，尝试截取第一个 JSON 对象。
         start = candidate.find("{")
         end = candidate.rfind("}")
         if start == -1 or end <= start:
@@ -86,7 +98,14 @@ class CodingAgent:
         self.completion_harness = completion_harness or CompletionHarness()
 
     def run(self, task: str) -> AgentResult:
+        """执行一个用户任务。
+
+        主循环的职责是把“模型文本”变成“可执行动作”，再把工具结果变回模型可读的
+        OBSERVATION。模型决定下一步，程序负责执行、记录和验收。
+        """
+        # 完成度 harness 在任务开始时生成验收标准，并拍一份工作区初始快照。
         self.completion_harness.start_task(task, self.tools.workspace)
+        # perception/plan/memory/completion 会被合并进状态提示，帮助模型知道当前进度。
         perception = Perception(task, self.tools.workspace)
         plan = self.planner.create_initial_plan(task)
         messages = [
@@ -97,6 +116,7 @@ class CodingAgent:
 
         for step in range(1, self.config.max_steps + 1):
             perception.observe_step(step)
+            # 让模型基于当前 messages 选择下一步：调用工具或返回 final。
             raw_response = self.client.complete(messages)
             messages.append({"role": "assistant", "content": raw_response})
 
@@ -116,6 +136,7 @@ class CodingAgent:
                 )
                 continue
 
+            # 决策层先检查动作格式和风险，再允许真正执行工具。
             decision = self.decision_policy.decide(response)
             if not decision.allowed:
                 messages.append(
@@ -133,6 +154,7 @@ class CodingAgent:
 
             if response["type"] == "final":
                 message = str(response.get("message", "")).strip()
+                # final 不会被直接相信，必须先通过 completion harness。
                 completion = self.completion_harness.evaluate(message)
                 if not completion.accepted:
                     # final 是模型提出的“我完成了”。如果只差推荐验证命令，
@@ -149,6 +171,7 @@ class CodingAgent:
                     continue
                 return AgentResult(message or "Done.", step, messages, completion)
 
+            # 走到这里说明模型选择了工具调用，tool_name/args 会交给 ToolRegistry。
             tool_name = str(response.get("tool", ""))
             args = response.get("args", {})
             if not isinstance(args, dict):
@@ -161,8 +184,11 @@ class CodingAgent:
             else:
                 result = self.tools.run(tool_name, args)
 
+            # 更新当前观察状态
             perception.observe_tool_result(result)
+            # 保存短期运行记忆
             self.memory.remember_tool_result(result)
+            # 保存验收证据
             self.completion_harness.record_tool_call(tool_name, args if isinstance(args, dict) else {}, result)
             plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
             messages.append(
@@ -177,8 +203,10 @@ class CodingAgent:
                     ),
                 }
             )
+            # 每次工具调用后都追加最新状态，让模型下一轮看到感知、计划、记忆和验收标准。
             messages.append({"role": "user", "content": self._state_prompt(perception, plan)})
 
+        # 超过最大步数仍未 final 时，返回停止信息，同时附带当前完成度检查结果。
         completion = self.completion_harness.evaluate("")
         return AgentResult(
             f"Stopped after {self.config.max_steps} steps without a final answer.",
@@ -188,7 +216,7 @@ class CodingAgent:
         )
 
     @staticmethod
-    def _observation(
+    def  _observation(
         ok: bool,
         tool: str,
         output: str,
@@ -202,6 +230,11 @@ class CodingAgent:
         return "OBSERVATION:\n" + json.dumps(payload, ensure_ascii=False)
 
     def _state_prompt(self, perception: Perception, plan: Plan) -> str:
+        """合并四类运行状态，作为下一轮模型输入。
+
+        这是架构的关键拼接点：感知告诉模型刚发生什么，计划告诉模型下一步方向，
+        记忆保留最近事实，completion harness 告诉模型还缺哪些验收证据。
+        """
         return "\n\n".join(
             [
                 perception.state.to_prompt(),
