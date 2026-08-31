@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 from pathlib import Path
 
 from smallagent.agent import AgentConfig, CodingAgent, parse_agent_response
+from smallagent.cli import main
 from smallagent.completion import CompletionHarness
 from smallagent.config import load_dotenv
 from smallagent.decision import DecisionPolicy
@@ -57,6 +61,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(result.steps, 4)
             self.assertIsNotNone(result.completion_check)
             self.assertTrue(result.completion_check.accepted)
+            self.assertTrue(result.completion_check.evidence_summary)
             self.assertTrue(any("OBSERVATION" in item["content"] for item in result.history))
             self.assertTrue(any("SELF_CHECK" in item["content"] for item in result.history))
 
@@ -175,6 +180,23 @@ class ArchitectureTests(unittest.TestCase):
 
         self.assertTrue(final_check.accepted)
 
+    def test_completion_harness_extracts_structured_evidence(self) -> None:
+        harness = CompletionHarness()
+        harness.start_task("实现功能")
+
+        harness.record_tool_result({"tool": "write_file", "ok": True, "output": "wrote main.py", "error": ""})
+        harness.record_tool_result({"tool": "run_shell", "ok": True, "output": "Ran 1 test OK", "error": ""})
+
+        self.assertEqual(harness.evidence[0].tool, "write_file")
+        self.assertIn("mutation", harness.evidence[0].tags)
+        self.assertIn("shell", harness.evidence[1].tags)
+        self.assertIn("最近证据", harness.to_prompt())
+
+        check = harness.evaluate("实现完成，验证通过")
+
+        self.assertTrue(check.accepted)
+        self.assertTrue(any("run_shell 成功" in item for item in check.evidence_summary))
+
 
 class ToolTests(unittest.TestCase):
     def test_paths_cannot_escape_workspace(self) -> None:
@@ -207,6 +229,40 @@ class ConfigTests(unittest.TestCase):
 
                 self.assertEqual(__import__("os").environ["OPENAI_API_KEY"], "from-env")
                 self.assertEqual(__import__("os").environ["SMALLAGENT_MODEL"], "demo-model")
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_writes_completion_report_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"已查看目录"}',
+                ]
+            )
+
+            output = io.StringIO()
+            with (
+                patch("smallagent.cli.OpenAICompatibleClient.from_env", return_value=client),
+                redirect_stdout(output),
+            ):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        tmp,
+                        "--report-file",
+                        str(report_path),
+                        "查看目录",
+                    ]
+                )
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(report["final_message"], "已查看目录")
+            self.assertTrue(report["completion_check"]["accepted"])
+            self.assertTrue(report["completion_check"]["evidence_summary"])
 
 
 if __name__ == "__main__":

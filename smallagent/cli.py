@@ -33,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--history-file",
         help="可选：保存完整对话和工具观察的 JSON 文件路径。",
     )
+    parser.add_argument(
+        "--report-file",
+        help="可选：保存最终结果和完成度检查报告的 JSON 文件路径。",
+    )
     return parser
 
 
@@ -57,4 +61,20 @@ def main(argv: list[str] | None = None) -> int:
             newline="\n",
         )
         print(f"历史记录: {history_path}")
+    if args.report_file:
+        report_path = Path(args.report_file).resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report = {
+            "final_message": result.final_message,
+            "steps": result.steps,
+            "completion_check": result.completion_check.to_dict()
+            if result.completion_check
+            else None,
+        }
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"完成度报告: {report_path}")
     return 0
