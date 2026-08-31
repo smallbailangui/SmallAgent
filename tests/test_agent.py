@@ -62,6 +62,8 @@ class AgentTests(unittest.TestCase):
             self.assertIsNotNone(result.completion_check)
             self.assertTrue(result.completion_check.accepted)
             self.assertTrue(result.completion_check.evidence_summary)
+            self.assertEqual(result.completion_check.changed_files[0].path, "hello.txt")
+            self.assertEqual(result.completion_check.changed_files[0].status, "added")
             self.assertTrue(any("OBSERVATION" in item["content"] for item in result.history))
             self.assertTrue(any("SELF_CHECK" in item["content"] for item in result.history))
 
@@ -179,6 +181,8 @@ class ArchitectureTests(unittest.TestCase):
         final_check = harness.evaluate("修复完成，测试通过")
 
         self.assertTrue(final_check.accepted)
+        self.assertTrue(all(result.met for result in final_check.criteria_results))
+        self.assertTrue(final_check.evidence)
 
     def test_completion_harness_extracts_structured_evidence(self) -> None:
         harness = CompletionHarness()
@@ -196,6 +200,76 @@ class ArchitectureTests(unittest.TestCase):
 
         self.assertTrue(check.accepted)
         self.assertTrue(any("run_shell 成功" in item for item in check.evidence_summary))
+
+        report = check.to_dict()
+
+        self.assertEqual(report["evidence"][0]["index"], 1)
+        self.assertIn("criteria_results", report)
+        self.assertTrue(all(item["met"] for item in report["criteria_results"]))
+        self.assertIn(1, report["criteria_results"][1]["evidence_indices"])
+
+    def test_completion_harness_detects_workspace_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            original = workspace / "app.py"
+            original.write_text("print('old')\n", encoding="utf-8")
+            harness = CompletionHarness()
+            harness.start_task("修改 app.py", workspace)
+
+            original.write_text("print('new')\n", encoding="utf-8")
+            (workspace / "created.py").write_text("print('created')\n", encoding="utf-8")
+            changes = {item.path: item.status for item in harness.changed_files()}
+
+            self.assertEqual(changes["app.py"], "modified")
+            self.assertEqual(changes["created.py"], "added")
+
+    def test_completion_harness_requires_recommended_verification_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
+            (workspace / "tests").mkdir()
+            target = workspace / "app.py"
+            target.write_text("old\n", encoding="utf-8")
+            harness = CompletionHarness()
+            harness.start_task("修复测试", workspace)
+
+            self.assertIn("python -m unittest discover -s tests -v", harness.to_prompt())
+
+            harness.record_tool_result({"tool": "read_file", "ok": True, "output": "old", "error": ""})
+            target.write_text("new\n", encoding="utf-8")
+            harness.record_tool_result({"tool": "replace_text", "ok": True, "output": "replaced 1 occurrence(s)", "error": ""})
+            harness.record_tool_call(
+                "run_shell",
+                {"command": "python -m unittest"},
+                {"tool": "run_shell", "ok": True, "output": "OK", "error": ""},
+            )
+            incomplete = harness.evaluate("修复完成，测试通过")
+
+            self.assertFalse(incomplete.accepted)
+            self.assertIn("推荐的项目验证命令", incomplete.to_prompt())
+
+            harness.record_tool_call(
+                "run_shell",
+                {"command": "python -m unittest discover -s tests -v"},
+                {"tool": "run_shell", "ok": True, "output": "OK", "error": ""},
+            )
+            complete = harness.evaluate("修复完成，测试通过")
+
+            self.assertTrue(complete.accepted)
+            self.assertTrue(any("recommended_verification" in item.tags for item in complete.evidence))
+            self.assertTrue(complete.changed_files)
+            self.assertTrue(complete.verification_commands)
+            self.assertEqual(complete.evidence[-1].details["command"], "python -m unittest discover -s tests -v")
+
+    def test_completion_harness_rejects_unproven_test_pass_claim(self) -> None:
+        harness = CompletionHarness()
+        harness.start_task("查看目录")
+        harness.record_tool_result({"tool": "get_cwd", "ok": True, "output": "workspace", "error": ""})
+
+        check = harness.evaluate("测试通过")
+
+        self.assertFalse(check.accepted)
+        self.assertIn("缺少成功的 shell 验证证据", check.to_prompt())
 
 
 class ToolTests(unittest.TestCase):
@@ -237,8 +311,9 @@ class CliTests(unittest.TestCase):
             report_path = Path(tmp) / "report.json"
             client = FakeClient(
                 [
-                    '{"type":"tool","tool":"get_cwd","args":{}}',
-                    '{"type":"final","message":"已查看目录"}',
+                    '{"type":"tool","tool":"write_file","args":{"path":"note.txt","content":"ok"}}',
+                    '{"type":"tool","tool":"read_file","args":{"path":"note.txt"}}',
+                    '{"type":"final","message":"已创建 note.txt 并复查"}',
                 ]
             )
 
@@ -253,16 +328,19 @@ class CliTests(unittest.TestCase):
                         tmp,
                         "--report-file",
                         str(report_path),
-                        "查看目录",
+                        "创建 note.txt",
                     ]
                 )
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(report["final_message"], "已查看目录")
+            self.assertEqual(report["final_message"], "已创建 note.txt 并复查")
             self.assertTrue(report["completion_check"]["accepted"])
             self.assertTrue(report["completion_check"]["evidence_summary"])
+            self.assertTrue(report["completion_check"]["criteria_results"])
+            self.assertEqual(report["completion_check"]["evidence"][0]["tool"], "write_file")
+            self.assertEqual(report["completion_check"]["changed_files"][0]["path"], "note.txt")
 
 
 if __name__ == "__main__":

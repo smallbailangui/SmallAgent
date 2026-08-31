@@ -86,7 +86,7 @@ class CodingAgent:
         self.completion_harness = completion_harness or CompletionHarness()
 
     def run(self, task: str) -> AgentResult:
-        self.completion_harness.start_task(task)
+        self.completion_harness.start_task(task, self.tools.workspace)
         perception = Perception(task, self.tools.workspace)
         plan = self.planner.create_initial_plan(task)
         messages = [
@@ -158,7 +158,7 @@ class CodingAgent:
 
             perception.observe_tool_result(result)
             self.memory.remember_tool_result(result)
-            self.completion_harness.record_tool_result(result)
+            self.completion_harness.record_tool_call(tool_name, args if isinstance(args, dict) else {}, result)
             plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
             messages.append(
                 {
