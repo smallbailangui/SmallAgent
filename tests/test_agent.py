@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -111,6 +112,37 @@ class AgentTests(unittest.TestCase):
             self.assertIn("decision", joined_history)
             self.assertIn("工具参数必须是对象", joined_history)
             self.assertIn("SELF_CHECK", joined_history)
+
+    def test_agent_auto_runs_recommended_verification_before_final(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
+            (workspace / "tests").mkdir()
+            (workspace / "tests" / "test_smoke.py").write_text(
+                "import unittest\n\n"
+                "class SmokeTest(unittest.TestCase):\n"
+                "    def test_smoke(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"write_file","args":{"path":"app.py","content":"print(1)\\n"}}',
+                    '{"type":"tool","tool":"read_file","args":{"path":"app.py"}}',
+                    '{"type":"final","message":"已创建 app.py 并复查"}',
+                ]
+            )
+            agent = CodingAgent(client, ToolRegistry(workspace), AgentConfig(max_steps=4))
+
+            result = agent.run("创建 app.py")
+
+            self.assertEqual(result.final_message, "已创建 app.py 并复查")
+            self.assertIsNotNone(result.completion_check)
+            self.assertTrue(result.completion_check.accepted)
+            self.assertTrue(any("AUTO_VERIFY" in item["content"] for item in result.history))
+            self.assertTrue(
+                any("recommended_verification" in item.tags for item in result.completion_check.evidence)
+            )
 
 
 class ArchitectureTests(unittest.TestCase):
@@ -273,6 +305,87 @@ class ArchitectureTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
+    def test_search_text_finds_matches_with_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "app.py").write_text("alpha\nBeta\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+
+            result = tools.run("search_text", {"query": "beta", "path": ".", "max_results": 5})
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["metadata"]["match_count"], 1)
+            self.assertEqual(result["metadata"]["matches"][0]["path"], "app.py")
+            self.assertEqual(result["metadata"]["matches"][0]["line"], 2)
+
+    def test_file_info_reports_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "note.txt").write_text("hello", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+
+            result = tools.run("file_info", {"path": "note.txt"})
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["metadata"]["exists"])
+            self.assertEqual(result["metadata"]["type"], "file")
+            self.assertEqual(result["metadata"]["size_bytes"], 5)
+
+    def test_git_status_and_diff_are_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            subprocess_result = subprocess.run(
+                ["git", "init"],
+                cwd=workspace,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+            self.assertEqual(subprocess_result.returncode, 0)
+            (workspace / "app.py").write_text("print('hello')\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+
+            status = tools.run("git_status", {})
+            diff = tools.run("git_diff", {})
+
+            self.assertTrue(status["ok"])
+            self.assertIn("app.py", status["output"])
+            self.assertTrue(diff["ok"])
+
+    def test_discover_and_run_recommended_verification_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
+            tests_dir = workspace / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_smoke.py").write_text(
+                "import unittest\n\n"
+                "class SmokeTest(unittest.TestCase):\n"
+                "    def test_smoke(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            tools = ToolRegistry(workspace)
+
+            discovered = tools.run("discover_verification", {})
+            verified = tools.run("run_recommended_verification", {"index": 1, "timeout": 30})
+
+            self.assertTrue(discovered["ok"])
+            self.assertIn("python -m unittest discover -s tests -v", discovered["output"])
+            self.assertTrue(verified["ok"])
+            self.assertTrue(verified["metadata"]["recommended_verification"])
+            self.assertEqual(verified["metadata"]["returncode"], 0)
+
+    def test_run_shell_returns_structured_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = ToolRegistry(Path(tmp))
+            result = tools.run("run_shell", {"command": "python --version", "timeout": 30})
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["metadata"]["returncode"], 0)
+            self.assertIn("python --version", result["metadata"]["command"])
+
     def test_paths_cannot_escape_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tools = ToolRegistry(Path(tmp))
