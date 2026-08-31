@@ -7,10 +7,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .verification import VerificationCommand, discover_verification_commands, normalize_command
 
+
+# 这三组工具分类是 harness 的证据标签来源。
+# 一个工具可以属于多个类别，例如 run_shell 既能提供上下文，也能提供验证证据。
 MODIFYING_TOOLS = {"write_file", "replace_text"}
-VERIFICATION_TOOLS = {"read_file", "list_files", "run_shell"}
-CONTEXT_TOOLS = {"get_cwd", "list_files", "read_file", "run_shell"}
+VERIFICATION_TOOLS = {"read_file", "list_files", "run_shell", "run_recommended_verification"}
+CONTEXT_TOOLS = {
+    "get_cwd",
+    "list_files",
+    "read_file",
+    "file_info",
+    "search_text",
+    "git_status",
+    "git_diff",
+    "discover_verification",
+    "run_shell",
+}
 MUTATION_KEYWORDS = (
     "创建",
     "写",
@@ -38,6 +52,8 @@ TEST_KEYWORDS = (
     "verify",
     "lint",
 )
+# TEST_KEYWORDS 用于从任务文本生成验收标准；TEST_CLAIM_KEYWORDS 用于检查 final 里的测试声明。
+# 后者刻意不包含“验证/verify”，避免“我已复查文件”这类普通验证被误判成测试通过声明。
 TEST_CLAIM_KEYWORDS = ("测试", "检查", "test", "check", "lint")
 SNAPSHOT_IGNORED_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", "node_modules"}
 SNAPSHOT_MAX_BYTES = 1_000_000
@@ -75,25 +91,12 @@ class ChangedFile:
 
 
 @dataclass
-class VerificationCommand:
-    """harness 基于项目形状发现的推荐验证命令。"""
-
-    command: str
-    reason: str
-
-    def to_prompt(self) -> str:
-        return f"{self.command}（{self.reason}）"
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "command": self.command,
-            "reason": self.reason,
-        }
-
-
-@dataclass
 class Evidence:
-    """一条从工具结果提炼出的验收证据。"""
+    """一条从工具结果提炼出的验收证据。
+
+    tool_results 是原始工具观察；Evidence 是给完成度检查和 JSON report 用的稳定结构。
+    tags 用来表达这条证据能满足哪些验收标准，details 保留 path/command 等可追溯信息。
+    """
 
     index: int
     tool: str
@@ -122,7 +125,10 @@ class Evidence:
 
 @dataclass
 class CriterionResult:
-    """一条验收标准的机器可读评估结果。"""
+    """一条验收标准的机器可读评估结果。
+
+    evidence 保存命中的证据对象；导出 JSON 时只写 evidence_indices，避免重复塞大量摘要。
+    """
 
     criterion: AcceptanceCriterion
     met: bool
@@ -145,7 +151,11 @@ class CriterionResult:
 
 @dataclass
 class CompletionCheck:
-    """一次最终回答是否可接受的判断。"""
+    """一次最终回答是否可接受的判断。
+
+    criteria_status/evidence_summary 面向模型和人阅读；criteria_results/evidence/changed_files
+    面向外部考核脚本稳定解析。
+    """
 
     accepted: bool
     reasons: list[str] = field(default_factory=list)
@@ -185,9 +195,16 @@ class CompletionCheck:
             "verification_commands": [item.to_dict() for item in self.verification_commands],
         }
 
+    def missing_criteria_keys(self) -> set[str]:
+        return {
+            result.criterion.key
+            for result in self.criteria_results
+            if not result.met
+        }
+
 
 class CompletionHarness:
-    """根据工具轨迹判断 agent 是否有足够证据结束任务。"""
+    """根据任务、工具轨迹和工作区变化判断 agent 是否有足够证据结束任务。"""
 
     def __init__(self) -> None:
         self.tool_results: list[dict[str, Any]] = []
@@ -198,11 +215,12 @@ class CompletionHarness:
         self.verification_commands: list[VerificationCommand] = []
 
     def start_task(self, task: str, workspace: Path | None = None) -> None:
+        """开启一次任务级检查，重置证据并拍摄初始工作区快照。"""
         self.tool_results = []
         self.evidence = []
         self.workspace = workspace.resolve() if workspace else None
         self.initial_snapshot = self._snapshot_workspace(self.workspace) if self.workspace else {}
-        self.verification_commands = self._discover_verification_commands(self.workspace)
+        self.verification_commands = discover_verification_commands(self.workspace)
         self.criteria = self._build_acceptance_criteria(task)
 
     def record_tool_call(
@@ -211,17 +229,20 @@ class CompletionHarness:
         args: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        """记录带参数的工具调用，用于生成可追溯 Evidence。"""
         copied = dict(result)
         copied.setdefault("tool", tool)
         self.tool_results.append(copied)
         self.evidence.append(self._evidence_from_result(copied, args))
 
     def record_tool_result(self, result: dict[str, Any]) -> None:
+        """兼容旧测试和简单调用；没有 args 时仍然保留基础工具证据。"""
         copied = dict(result)
         self.tool_results.append(copied)
         self.evidence.append(self._evidence_from_result(copied, {}))
 
     def to_prompt(self) -> str:
+        """渲染给模型看的验收上下文，让模型提前知道要补哪些证据。"""
         if not self.criteria:
             return "验收标准：暂无。"
         lines = ["验收标准："]
@@ -238,6 +259,11 @@ class CompletionHarness:
         return "\n".join(lines)
 
     def evaluate(self, final_message: str) -> CompletionCheck:
+        """评估 final 是否可以被接受。
+
+        这个方法只做确定性检查：final 文本、最近失败、修改后验证、测试声明和验收标准。
+        如果不通过，agent 会把原因作为 SELF_CHECK 反馈给模型继续工作。
+        """
         reasons: list[str] = []
         criteria_status: list[str] = []
         criteria_results: list[CriterionResult] = []
@@ -279,6 +305,7 @@ class CompletionHarness:
         )
 
     def changed_files(self) -> list[ChangedFile]:
+        """对比任务开始时的快照和当前快照，生成轻量文件变更列表。"""
         if self.workspace is None:
             return []
         current_snapshot = self._snapshot_workspace(self.workspace)
@@ -295,21 +322,37 @@ class CompletionHarness:
                 changes.append(ChangedFile(path, "modified"))
         return changes
 
+    def next_recommended_verification(self) -> VerificationCommand | None:
+        """返回还没有成功执行过的首个推荐验证命令。"""
+        if not self.verification_commands:
+            return None
+        if self._has_successful_evidence("recommended_verification"):
+            return None
+        return self.verification_commands[0]
+
     def _evidence_from_result(self, result: dict[str, Any], args: dict[str, Any]) -> Evidence:
+        """把原始工具结果和调用参数压缩成可评分证据。"""
         tool = str(result.get("tool", "unknown"))
         ok = bool(result.get("ok", False))
         output = str(result.get("output", "") or result.get("error", ""))
-        tags = self._tags_for_tool(tool, ok, args)
+        tags = self._tags_for_tool(tool, ok, args, result)
         return Evidence(
             index=len(self.evidence) + 1,
             tool=tool,
             ok=ok,
             tags=tags,
             summary=output[:160],
-            details=self._details_for_tool(tool, args),
+            details=self._details_for_tool(tool, args, result),
         )
 
-    def _tags_for_tool(self, tool: str, ok: bool, args: dict[str, Any]) -> set[str]:
+    def _tags_for_tool(
+        self,
+        tool: str,
+        ok: bool,
+        args: dict[str, Any],
+        result: dict[str, Any],
+    ) -> set[str]:
+        """根据工具类型和 metadata 给 Evidence 打标签。"""
         if not ok:
             return {"failure"}
         tags: set[str] = set()
@@ -319,24 +362,44 @@ class CompletionHarness:
             tags.add("mutation")
         if tool in VERIFICATION_TOOLS:
             tags.add("verification")
-        if tool == "run_shell":
+        if tool in {"run_shell", "run_recommended_verification"}:
             tags.add("shell")
             command = str(args.get("command", ""))
-            if self._is_recommended_verification_command(command):
+            metadata = result.get("metadata", {})
+            is_recommended = isinstance(metadata, dict) and bool(metadata.get("recommended_verification"))
+            if is_recommended or self._is_recommended_verification_command(command):
                 tags.add("recommended_verification")
         return tags or {"tool"}
 
-    def _details_for_tool(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _details_for_tool(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """提取 report 中需要稳定保留的调用细节。"""
         details: dict[str, Any] = {}
-        if tool in {"read_file", "write_file", "replace_text"} and isinstance(args.get("path"), str):
+        if tool in {"read_file", "write_file", "replace_text", "file_info"} and isinstance(args.get("path"), str):
             details["path"] = args["path"]
-        if tool == "list_files" and isinstance(args.get("path", "."), str):
+        if tool in {"list_files", "git_diff"} and isinstance(args.get("path", "."), str):
             details["path"] = args.get("path", ".")
-        if tool == "run_shell" and isinstance(args.get("command"), str):
+        if tool == "search_text" and isinstance(args.get("query"), str):
+            details["query"] = args["query"]
+            details["path"] = args.get("path", ".")
+        if tool in {"run_shell", "run_recommended_verification"} and isinstance(args.get("command"), str):
             details["command"] = args["command"]
+        metadata = result.get("metadata", {})
+        if isinstance(metadata, dict):
+            for key in ("command", "returncode", "reason", "recommended_verification"):
+                if key in metadata:
+                    details[key] = metadata[key]
         return details
 
     def _build_acceptance_criteria(self, task: str) -> list[AcceptanceCriterion]:
+        """从任务文本生成保守验收标准。
+
+        当前实现只用关键词启发式，宁可少生成一点，也避免把无关任务误拦死。
+        """
         normalized = task.lower()
         criteria = [
             AcceptanceCriterion("context", "已通过工具收集任务相关工作区上下文。"),
@@ -363,6 +426,7 @@ class CompletionHarness:
         return bool(self._matching_evidence(criterion))
 
     def _matching_evidence(self, criterion: AcceptanceCriterion) -> list[Evidence]:
+        """为单条验收标准找能支撑它的证据。"""
         if criterion.key == "context":
             return self._successful_evidence("context")
         if criterion.key == "mutation":
@@ -406,6 +470,10 @@ class CompletionHarness:
         ]
 
     def _snapshot_workspace(self, workspace: Path | None) -> dict[str, str]:
+        """生成工作区快照。
+
+        小文件用 sha256 判断内容是否变化；大文件只记录大小，避免为了快照消耗太多内存。
+        """
         if workspace is None or not workspace.exists():
             return {}
         snapshot: dict[str, str] = {}
@@ -422,37 +490,15 @@ class CompletionHarness:
             snapshot[str(rel).replace("\\", "/")] = digest
         return snapshot
 
-    def _discover_verification_commands(self, workspace: Path | None) -> list[VerificationCommand]:
-        if workspace is None or not workspace.exists():
-            return []
-        commands: list[VerificationCommand] = []
-        if (workspace / "scripts" / "check.ps1").exists():
-            commands.append(VerificationCommand("powershell -ExecutionPolicy Bypass -File scripts/check.ps1", "检测到 scripts/check.ps1"))
-        if (workspace / "pyproject.toml").exists() and (workspace / "tests").exists():
-            commands.append(VerificationCommand("python -m unittest discover -s tests -v", "检测到 pyproject.toml 和 tests 目录"))
-        if (workspace / "package.json").exists():
-            commands.append(VerificationCommand("npm test", "检测到 package.json"))
-        if (workspace / "Cargo.toml").exists():
-            commands.append(VerificationCommand("cargo test", "检测到 Cargo.toml"))
-        if (workspace / "go.mod").exists():
-            commands.append(VerificationCommand("go test ./...", "检测到 go.mod"))
-        return commands
-
     def _is_recommended_verification_command(self, command: str) -> bool:
-        normalized = self._normalize_command(command)
-        return any(
-            normalized == self._normalize_command(item.command)
-            for item in self.verification_commands
-        )
+        """判断模型手写的 shell 命令是否等价于 harness 推荐命令。"""
+        normalized = normalize_command(command)
+        return any(normalized == normalize_command(item.command) for item in self.verification_commands)
 
     def _mentions_tests_passed(self, final_message: str) -> bool:
+        """检查 final 是否声称测试/检查已经通过。"""
         normalized = final_message.lower()
         pass_markers = ("通过", "passed", "pass", "ok", "成功")
         return any(keyword in normalized for keyword in TEST_CLAIM_KEYWORDS) and any(
             marker in normalized for marker in pass_markers
         )
-
-    @staticmethod
-    def _normalize_command(command: str) -> str:
-        normalized = command.replace("\\", "/")
-        return " ".join(normalized.strip().lower().split())

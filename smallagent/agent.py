@@ -135,6 +135,11 @@ class CodingAgent:
                 message = str(response.get("message", "")).strip()
                 completion = self.completion_harness.evaluate(message)
                 if not completion.accepted:
+                    # final 是模型提出的“我完成了”。如果只差推荐验证命令，
+                    # agent 可以自己补一次验收，而不是把同一个请求再丢回模型。
+                    plan = self._try_auto_verification(perception, plan, messages, completion)
+                    completion = self.completion_harness.evaluate(message)
+                if not completion.accepted:
                     messages.append(
                         {
                             "role": "user",
@@ -168,6 +173,7 @@ class CodingAgent:
                         result["tool"],
                         result.get("output", ""),
                         result.get("error", ""),
+                        result.get("metadata"),
                     ),
                 }
             )
@@ -182,8 +188,17 @@ class CodingAgent:
         )
 
     @staticmethod
-    def _observation(ok: bool, tool: str, output: str, error: str) -> str:
+    def _observation(
+        ok: bool,
+        tool: str,
+        output: str,
+        error: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """把工具结果包装成模型下一轮可读的 OBSERVATION。"""
         payload = {"ok": ok, "tool": tool, "output": output, "error": error}
+        if metadata is not None:
+            payload["metadata"] = metadata
         return "OBSERVATION:\n" + json.dumps(payload, ensure_ascii=False)
 
     def _state_prompt(self, perception: Perception, plan: Plan) -> str:
@@ -203,3 +218,50 @@ class CodingAgent:
             + message
             + "\n请继续调用工具补足证据，修复问题后再返回 final。"
         )
+
+    def _try_auto_verification(
+        self,
+        perception: Perception,
+        plan: Plan,
+        messages: list[dict[str, str]],
+        completion: CompletionCheck,
+    ) -> Plan:
+        """在 final 前自动补一次推荐验证。
+
+        这个自动化非常保守：只有缺失项完全属于 run_shell/recommended_verification 时才运行。
+        代码修改、上下文不足、最近工具失败或空 final 都交还给模型继续处理。
+        """
+        command = self.completion_harness.next_recommended_verification()
+        if command is None:
+            return plan
+        if any(reason.startswith(("最终回答不能为空", "最近一次工具")) for reason in completion.reasons):
+            return plan
+        missing = completion.missing_criteria_keys()
+        if not missing or not missing <= {"run_shell", "recommended_verification"}:
+            return plan
+
+        args = {"index": 1, "timeout": 120}
+        result = self.tools.run("run_recommended_verification", args)
+        perception.observe_tool_result(result)
+        self.memory.remember_tool_result(result)
+        self.completion_harness.record_tool_call("run_recommended_verification", args, result)
+        plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
+        messages.append(
+            {
+                "role": "user",
+                "content": self._observation(
+                    result["ok"],
+                    result["tool"],
+                    result.get("output", ""),
+                    result.get("error", ""),
+                    result.get("metadata"),
+                ),
+            }
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": "AUTO_VERIFY:\n" + command.to_prompt() + "\n\n" + self._state_prompt(perception, plan),
+            }
+        )
+        return plan
