@@ -33,10 +33,19 @@ class DecisionPolicy:
         return Decision(True, f"允许执行工具 {tool}", self._classify_tool_risk(tool))
 
     def _classify_tool_risk(self, tool: str) -> str:
-        if tool in {"get_cwd", "list_files", "read_file"}:
+        if tool in {
+            "get_cwd",
+            "list_files",
+            "read_file",
+            "file_info",
+            "search_text",
+            "git_status",
+            "git_diff",
+            "discover_verification",
+        }:
             return "low"
         if tool in {"write_file", "replace_text"}:
             return "medium"
-        if tool == "run_shell":
+        if tool in {"run_shell", "run_recommended_verification"}:
             return "high"
         return "medium"
