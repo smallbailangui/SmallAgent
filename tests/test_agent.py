@@ -6,6 +6,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from smallagent.agent import AgentConfig, CodingAgent, parse_agent_response
+from smallagent.completion import CompletionHarness
 from smallagent.config import load_dotenv
 from smallagent.decision import DecisionPolicy
 from smallagent.memory import ShortTermMemory
@@ -43,6 +44,8 @@ class AgentTests(unittest.TestCase):
                 [
                     '{"type":"tool","tool":"write_file","args":{"path":"hello.txt","content":"hi"}}',
                     '{"type":"final","message":"created hello.txt"}',
+                    '{"type":"tool","tool":"read_file","args":{"path":"hello.txt"}}',
+                    '{"type":"final","message":"created hello.txt"}',
                 ]
             )
             agent = CodingAgent(client, ToolRegistry(Path(tmp)), AgentConfig(max_steps=4))
@@ -51,8 +54,11 @@ class AgentTests(unittest.TestCase):
 
             self.assertEqual(result.final_message, "created hello.txt")
             self.assertEqual((Path(tmp) / "hello.txt").read_text(encoding="utf-8"), "hi")
-            self.assertEqual(result.steps, 2)
+            self.assertEqual(result.steps, 4)
+            self.assertIsNotNone(result.completion_check)
+            self.assertTrue(result.completion_check.accepted)
             self.assertTrue(any("OBSERVATION" in item["content"] for item in result.history))
+            self.assertTrue(any("SELF_CHECK" in item["content"] for item in result.history))
 
     def test_agent_injects_perception_plan_and_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -78,6 +84,7 @@ class AgentTests(unittest.TestCase):
             self.assertIn("感知状态", joined_history)
             self.assertIn("当前计划", joined_history)
             self.assertIn("短期记忆", joined_history)
+            self.assertIn("验收标准", joined_history)
             self.assertEqual(len(memory.items), 1)
 
     def test_decision_rejects_invalid_tool_args(self) -> None:
@@ -85,15 +92,18 @@ class AgentTests(unittest.TestCase):
             [
                 '{"type":"tool","tool":"write_file","args":"bad"}',
                 '{"type":"final","message":"已停止"}',
+                '{"type":"tool","tool":"get_cwd","args":{}}',
+                '{"type":"final","message":"已停止"}',
             ]
         )
         with tempfile.TemporaryDirectory() as tmp:
-            agent = CodingAgent(client, ToolRegistry(Path(tmp)), AgentConfig(max_steps=3))
+            agent = CodingAgent(client, ToolRegistry(Path(tmp)), AgentConfig(max_steps=4))
             result = agent.run("错误动作")
 
             joined_history = "\n".join(item["content"] for item in result.history)
             self.assertIn("decision", joined_history)
             self.assertIn("工具参数必须是对象", joined_history)
+            self.assertIn("SELF_CHECK", joined_history)
 
 
 class ArchitectureTests(unittest.TestCase):
@@ -122,6 +132,48 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(policy.decide({"type": "tool", "tool": "read_file", "args": {}}).risk, "low")
         self.assertEqual(policy.decide({"type": "tool", "tool": "write_file", "args": {}}).risk, "medium")
         self.assertEqual(policy.decide({"type": "tool", "tool": "run_shell", "args": {}}).risk, "high")
+
+    def test_completion_harness_requires_verification_after_modification(self) -> None:
+        harness = CompletionHarness()
+
+        harness.record_tool_result({"tool": "write_file", "ok": True, "output": "wrote app.py", "error": ""})
+        failed_check = harness.evaluate("写入完成")
+
+        self.assertFalse(failed_check.accepted)
+        self.assertIn("缺少验证证据", failed_check.to_prompt())
+
+        harness.record_tool_result({"tool": "read_file", "ok": True, "output": "print('ok')", "error": ""})
+        passed_check = harness.evaluate("写入完成，已读取验证")
+
+        self.assertTrue(passed_check.accepted)
+
+    def test_completion_harness_rejects_final_after_failed_tool(self) -> None:
+        harness = CompletionHarness()
+
+        harness.record_tool_result({"tool": "run_shell", "ok": False, "output": "", "error": "exit 1"})
+        check = harness.evaluate("完成")
+
+        self.assertFalse(check.accepted)
+        self.assertIn("最近一次工具 run_shell 失败", check.to_prompt())
+
+    def test_completion_harness_builds_task_acceptance_criteria(self) -> None:
+        harness = CompletionHarness()
+        harness.start_task("修复测试并运行检查")
+
+        self.assertIn("文件修改", harness.to_prompt())
+        self.assertIn("shell 验证命令", harness.to_prompt())
+
+        harness.record_tool_result({"tool": "read_file", "ok": True, "output": "old", "error": ""})
+        partial_check = harness.evaluate("看起来完成")
+
+        self.assertFalse(partial_check.accepted)
+        self.assertIn("验收标准未满足", partial_check.to_prompt())
+
+        harness.record_tool_result({"tool": "replace_text", "ok": True, "output": "replaced 1 occurrence(s)", "error": ""})
+        harness.record_tool_result({"tool": "run_shell", "ok": True, "output": "OK", "error": ""})
+        final_check = harness.evaluate("修复完成，测试通过")
+
+        self.assertTrue(final_check.accepted)
 
 
 class ToolTests(unittest.TestCase):

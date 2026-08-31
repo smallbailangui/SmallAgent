@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .completion import CompletionCheck, CompletionHarness
 from .decision import DecisionPolicy
 from .memory import ShortTermMemory
 from .perception import Perception
@@ -30,6 +31,7 @@ class AgentResult:
     final_message: str
     steps: int
     history: list[dict[str, str]] = field(default_factory=list)
+    completion_check: CompletionCheck | None = None
 
 
 class ResponseParseError(ValueError):
@@ -73,6 +75,7 @@ class CodingAgent:
         planner: Planner | None = None,
         memory: ShortTermMemory | None = None,
         decision_policy: DecisionPolicy | None = None,
+        completion_harness: CompletionHarness | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -80,8 +83,10 @@ class CodingAgent:
         self.planner = planner or Planner()
         self.memory = memory or ShortTermMemory()
         self.decision_policy = decision_policy or DecisionPolicy()
+        self.completion_harness = completion_harness or CompletionHarness()
 
     def run(self, task: str) -> AgentResult:
+        self.completion_harness.start_task(task)
         perception = Perception(task, self.tools.workspace)
         plan = self.planner.create_initial_plan(task)
         messages = [
@@ -128,7 +133,16 @@ class CodingAgent:
 
             if response["type"] == "final":
                 message = str(response.get("message", "")).strip()
-                return AgentResult(message or "Done.", step, messages)
+                completion = self.completion_harness.evaluate(message)
+                if not completion.accepted:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": self._completion_feedback(completion.to_prompt()),
+                        }
+                    )
+                    continue
+                return AgentResult(message or "Done.", step, messages, completion)
 
             tool_name = str(response.get("tool", ""))
             args = response.get("args", {})
@@ -144,6 +158,7 @@ class CodingAgent:
 
             perception.observe_tool_result(result)
             self.memory.remember_tool_result(result)
+            self.completion_harness.record_tool_result(result)
             plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
             messages.append(
                 {
@@ -158,10 +173,12 @@ class CodingAgent:
             )
             messages.append({"role": "user", "content": self._state_prompt(perception, plan)})
 
+        completion = self.completion_harness.evaluate("")
         return AgentResult(
             f"Stopped after {self.config.max_steps} steps without a final answer.",
             self.config.max_steps,
             messages,
+            completion,
         )
 
     @staticmethod
@@ -175,5 +192,14 @@ class CodingAgent:
                 perception.state.to_prompt(),
                 plan.to_prompt(),
                 self.memory.to_prompt(),
+                self.completion_harness.to_prompt(),
             ]
+        )
+
+    @staticmethod
+    def _completion_feedback(message: str) -> str:
+        return (
+            "SELF_CHECK:\n"
+            + message
+            + "\n请继续调用工具补足证据，修复问题后再返回 final。"
         )

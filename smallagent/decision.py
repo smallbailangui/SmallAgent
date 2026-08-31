@@ -21,7 +21,7 @@ class DecisionPolicy:
     def decide(self, action: dict[str, Any]) -> Decision:
         action_type = action.get("type")
         if action_type == "final":
-            return Decision(True, "最终回答可以直接返回", "low")
+            return Decision(True, "最终回答可进入完成度检查", "low")
         if action_type != "tool":
             return Decision(False, "未知动作类型", "high")
 
