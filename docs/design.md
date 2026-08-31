@@ -36,6 +36,7 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 - 如果成功修改了文件，必须在之后成功执行 `read_file`、`list_files` 或 `run_shell` 之一，证明 agent 至少复查过修改结果。
 - 如果任务文本暗示需要改动、测试或检查，完成度检查会要求对应的成功工具证据，例如文件修改工具或 `run_shell`。
 - 如果 harness 发现了项目推荐验证命令，例如 `scripts/check.ps1`、Python unittest、`npm test`、`cargo test` 或 `go test ./...`，相关任务完成前需要成功运行推荐命令之一。
+- 如果 final 阶段唯一缺口是推荐验证命令，`smallagent.agent` 会自动运行一次推荐命令，把结果写入 `AUTO_VERIFY` 和结构化证据，再重新评估完成度。
 - 如果 final 声称测试或检查通过，但没有成功的 shell 验证证据，完成度检查会拒绝结束。
 - 如果任务要求改动且 harness 有工作区快照，报告会列出 added、modified、deleted 文件；验收标准也会要求快照中能看到真实文件变化。
 
@@ -44,6 +45,17 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 `AgentResult.completion_check` 会保留最后一次完成度检查结果，包括验收标准状态、结构化验收结果、最近证据摘要、推荐验证命令和工作区变化。调用方无需解析对话历史即可判断任务是通过验收结束，还是因为步数上限等原因停止。
 
 命令行入口支持 `--report-file`，会把最终回答、执行轮数和完成度检查写成 JSON。报告中的 `completion_check.accepted` 可作为总体通过标记，`criteria_results` 包含每条验收标准的 `key`、`description`、`met` 和 `evidence_indices`，`evidence` 保存带标签和调用参数摘要的工具证据，`changed_files` 保存工作区快照 diff，`verification_commands` 保存 harness 发现的推荐验证命令。这个出口可以被外部考核脚本读取，用来判断 agent 是否给出了可验收的完成证据。
+
+## 工具层
+
+工具层围绕 coding agent 的常见工作流拆成四类：
+
+- 上下文工具：`get_cwd`、`list_files`、`read_file`、`file_info`、`search_text`，用于看项目形状、读取文件和查找符号或错误文本。
+- 编辑工具：`write_file`、`replace_text`，用于最小化文件修改。
+- 验证工具：`run_shell`、`discover_verification`、`run_recommended_verification`，用于执行检查命令和 harness 推荐命令。
+- Git 工具：`git_status`、`git_diff`，用于查看工作区变更。
+
+工具结果保留 `ok`、`tool`、`output`、`error` 四个基础字段；支持结构化数据的工具还会返回 `metadata`。例如 `search_text` 会返回匹配数量和命中行，`run_shell` 会返回 command、returncode、stdout、stderr，推荐验证工具会额外标记 `recommended_verification`。`smallagent.agent` 会把 metadata 放回 `OBSERVATION`，模型和完成度检查都能使用同一份结构化证据。
 
 ## 边界约束
 
