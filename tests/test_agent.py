@@ -25,8 +25,10 @@ class FakeClient:
     def __init__(self, responses: list[str]) -> None:
         self.responses = responses
         self.calls = 0
+        self.messages_seen: list[list[dict[str, str]]] = []
 
     def complete(self, messages: list[dict[str, str]]) -> str:
+        self.messages_seen.append([dict(message) for message in messages])
         response = self.responses[self.calls]
         self.calls += 1
         return response
@@ -95,6 +97,23 @@ class AgentTests(unittest.TestCase):
             self.assertIn("短期记忆", joined_history)
             self.assertIn("验收标准", joined_history)
             self.assertEqual(len(memory.items), 1)
+
+    def test_agent_accepts_session_context_before_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"完成"}',
+                ]
+            )
+            agent = CodingAgent(client, ToolRegistry(Path(tmp)), AgentConfig(max_steps=3))
+
+            agent.run("继续上一个任务", session_context="SESSION_CONTEXT:\n上一轮修改了 README")
+
+            first_messages = client.messages_seen[0]
+
+            self.assertIn("SESSION_CONTEXT", first_messages[-2]["content"])
+            self.assertEqual(first_messages[-1]["content"], "继续上一个任务")
 
     def test_decision_rejects_invalid_tool_args(self) -> None:
         client = FakeClient(
@@ -458,6 +477,8 @@ class CliTests(unittest.TestCase):
 
     def test_cli_interactive_mode_runs_terminal_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "interactive-history.json"
+            report_path = Path(tmp) / "interactive-report.json"
             client = FakeClient(
                 [
                     '{"type":"tool","tool":"get_cwd","args":{}}',
@@ -472,14 +493,30 @@ class CliTests(unittest.TestCase):
                 patch("builtins.input", side_effect=lambda prompt: next(inputs)),
                 redirect_stdout(output),
             ):
-                exit_code = main(["--workspace", tmp, "--interactive"])
+                exit_code = main(
+                    [
+                        "--workspace",
+                        tmp,
+                        "--history-file",
+                        str(history_path),
+                        "--report-file",
+                        str(report_path),
+                        "--interactive",
+                    ]
+                )
 
             rendered = output.getvalue()
+            history = json.loads(history_path.read_text(encoding="utf-8"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
 
             self.assertEqual(exit_code, 0)
             self.assertIn("SmallAgent 交互模式", rendered)
             self.assertIn("已查看目录", rendered)
             self.assertIn("任务历史", rendered)
+            self.assertEqual(history[0]["task"], "查看目录")
+            self.assertTrue(history[0]["history"])
+            self.assertEqual(report[0]["task_index"], 1)
+            self.assertTrue(report[0]["completion_check"]["accepted"])
 
 
 class TerminalSessionTests(unittest.TestCase):
@@ -506,6 +543,8 @@ class TerminalSessionTests(unittest.TestCase):
 
     def test_terminal_session_runs_multiple_tasks_and_keeps_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            history_path = Path(tmp) / "history.json"
+            report_path = Path(tmp) / "report.json"
             output = io.StringIO()
             client = FakeClient(
                 [
@@ -522,16 +561,24 @@ class TerminalSessionTests(unittest.TestCase):
                 config=AgentConfig(max_steps=3),
                 input_func=lambda prompt: next(inputs),
                 output=output,
+                history_file=history_path,
+                report_file=report_path,
             )
 
             session.run_forever()
             rendered = output.getvalue()
+            history = json.loads(history_path.read_text(encoding="utf-8"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
 
             self.assertEqual(len(session.summaries), 2)
             self.assertIn("第一个任务完成", rendered)
             self.assertIn("第二个任务完成", rendered)
             self.assertIn("1. [通过] 查看目录", rendered)
             self.assertIn("2. [通过] 再查看一次目录", rendered)
+            self.assertEqual(len(history), 2)
+            self.assertEqual(len(report), 2)
+            self.assertEqual(report[1]["task"], "再查看一次目录")
+            self.assertIn("SESSION_CONTEXT", client.messages_seen[2][-2]["content"])
 
 
 if __name__ == "__main__":
