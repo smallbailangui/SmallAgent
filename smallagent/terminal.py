@@ -78,7 +78,10 @@ class TerminalSession:
                     return 0
                 continue
 
-            self._run_task(task)
+            try:
+                self._run_task(task)
+            except Exception as exc:  # noqa: BLE001 - 交互终端要隔离单个任务失败，不能直接退出
+                self._record_task_failure(task, exc)
 
     def _handle_command(self, command: str) -> bool:
         """处理斜杠命令。
@@ -163,6 +166,39 @@ class TerminalSession:
                     else None,
                 },
             )
+
+    def _record_task_failure(self, task: str, exc: Exception) -> None:
+        """记录一次没有形成 AgentResult 的任务失败。
+
+        网络中断、模型服务异常、记录文件损坏等问题都可能发生在 agent 返回结果前。
+        交互式终端把这类失败压成摘要和 report 记录，然后继续等待用户下一条输入。
+        """
+        message = f"{type(exc).__name__}: {exc}"
+        summary = TaskSummary(task=task, final_message=message, steps=0, accepted=False)
+        self.summaries.append(summary)
+        task_index = len(self.summaries)
+        if self.history_file is not None:
+            self._append_json_record(
+                self.history_file,
+                {
+                    "task_index": task_index,
+                    **summary.to_dict(),
+                    "history": [],
+                    "error": message,
+                },
+            )
+        if self.report_file is not None:
+            self._append_json_record(
+                self.report_file,
+                {
+                    "task_index": task_index,
+                    **summary.to_dict(),
+                    "completion_check": None,
+                    "error": message,
+                },
+            )
+        self._print(f"任务失败：{message}")
+        self._print("交互模式仍在运行，可以重试或输入 /exit 退出。")
 
     def _print_help(self) -> None:
         """显示终端内置命令。"""

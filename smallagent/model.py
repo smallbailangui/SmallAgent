@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import http.client
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -67,6 +68,11 @@ class OpenAICompatibleClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+        except http.client.IncompleteRead as exc:
+            # 兼容服务偶尔会在 chunked 响应中途断开；这里转成清晰错误，交互终端可继续运行。
+            raise RuntimeError(
+                "model API response ended before it was fully read; please retry the task"
+            ) from exc
         except urllib.error.HTTPError as exc:
             # 把服务端返回的错误正文带出来，用户能直接看到 401/模型名错误等原因。
             detail = exc.read().decode("utf-8", errors="replace")
