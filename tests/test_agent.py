@@ -57,6 +57,20 @@ class IncompleteReadResponse:
         raise http.client.IncompleteRead(b"", 10)
 
 
+class JsonResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> "JsonResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
 class AgentTests(unittest.TestCase):
     def test_parse_accepts_plain_and_fenced_json(self) -> None:
         self.assertEqual(parse_agent_response('{"type":"final","message":"ok"}')["type"], "final")
@@ -463,11 +477,22 @@ class ConfigTests(unittest.TestCase):
 
 class ModelClientTests(unittest.TestCase):
     def test_model_client_wraps_incomplete_read(self) -> None:
-        client = OpenAICompatibleClient(api_key="test-key", model="test-model")
+        client = OpenAICompatibleClient(api_key="test-key", model="test-model", max_retries=0)
 
         with patch("urllib.request.urlopen", return_value=IncompleteReadResponse()):
             with self.assertRaisesRegex(RuntimeError, "response ended before"):
                 client.complete([{"role": "user", "content": "hello"}])
+
+    def test_model_client_retries_empty_content_once(self) -> None:
+        client = OpenAICompatibleClient(api_key="test-key", model="test-model", max_retries=1)
+        empty = JsonResponse({"choices": [{"message": {"content": ""}}]})
+        valid = JsonResponse({"choices": [{"message": {"content": "ok"}}]})
+
+        with patch("urllib.request.urlopen", side_effect=[empty, valid]) as urlopen:
+            content = client.complete([{"role": "user", "content": "hello"}])
+
+            self.assertEqual(content, "ok")
+            self.assertEqual(urlopen.call_count, 2)
 
 
 class CliTests(unittest.TestCase):
