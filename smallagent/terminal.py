@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, TextIO
 
 from .agent import AgentConfig, AgentResult, ChatClient, CodingAgent
+from .decision import Decision
 from .tools import ToolRegistry
 
 
@@ -111,7 +112,7 @@ class TerminalSession:
 
     def _run_task(self, task: str) -> AgentResult:
         """把普通用户输入交给 CodingAgent 执行，并记录任务摘要。"""
-        agent = CodingAgent(self.client, self.tools, self.config)
+        agent = CodingAgent(self.client, self.tools, self.config, approval_callback=self._approve_tool)
         result = agent.run(task, self._session_context_prompt())
         accepted = result.completion_check.accepted if result.completion_check else None
         summary = TaskSummary(
@@ -199,6 +200,27 @@ class TerminalSession:
             )
         self._print(f"任务失败：{message}")
         self._print("交互模式仍在运行，可以重试或输入 /exit 退出。")
+
+    def _approve_tool(self, action: dict[str, object], decision: Decision) -> bool:
+        """在交互模式下确认高风险工具调用。
+
+        当前 high 风险主要是 run_shell 和 run_recommended_verification。用户输入 y/yes
+        才允许执行；直接回车或其他输入都会拒绝。
+        """
+        tool = str(action.get("tool", ""))
+        args = action.get("args", {})
+        command = ""
+        if isinstance(args, dict) and isinstance(args.get("command"), str):
+            command = str(args["command"])
+        self._print(f"即将执行高风险工具：{tool}")
+        self._print(f"风险等级：{decision.risk}")
+        if command:
+            self._print(f"命令：{command}")
+        answer = self.input_func("是否允许执行？y/N: ").strip().lower()
+        allowed = answer in {"y", "yes"}
+        if not allowed:
+            self._print("已拒绝执行该工具。")
+        return allowed
 
     def _print_help(self) -> None:
         """显示终端内置命令。"""

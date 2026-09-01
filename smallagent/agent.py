@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .completion import CompletionCheck, CompletionHarness
-from .decision import DecisionPolicy
+from .decision import Decision, DecisionPolicy
 from .memory import ShortTermMemory
 from .perception import Perception
 from .planning import Plan, Planner
@@ -46,6 +46,9 @@ class AgentResult:
 
 class ResponseParseError(ValueError):
     """模型输出无法解析为智能体动作时抛出。"""
+
+
+ApprovalCallback = Callable[[dict[str, Any], Decision], bool]
 
 
 def parse_agent_response(text: str) -> dict[str, Any]:
@@ -88,6 +91,7 @@ class CodingAgent:
         memory: ShortTermMemory | None = None,
         decision_policy: DecisionPolicy | None = None,
         completion_harness: CompletionHarness | None = None,
+        approval_callback: ApprovalCallback | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -96,6 +100,7 @@ class CodingAgent:
         self.memory = memory or ShortTermMemory()
         self.decision_policy = decision_policy or DecisionPolicy()
         self.completion_harness = completion_harness or CompletionHarness()
+        self.approval_callback = approval_callback
 
     def run(self, task: str, session_context: str = "") -> AgentResult:
         """执行一个用户任务。
@@ -180,6 +185,19 @@ class CodingAgent:
             # 走到这里说明模型选择了工具调用，tool_name/args 会交给 ToolRegistry。
             tool_name = str(response.get("tool", ""))
             args = response.get("args", {})
+            if not self._approved(response, decision):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": self._observation(
+                            False,
+                            "approval",
+                            "",
+                            f"用户拒绝执行高风险工具 {tool_name}；请选择更安全的方式继续。",
+                        ),
+                    }
+                )
+                continue
             if not isinstance(args, dict):
                 result = {
                     "ok": False,
@@ -222,7 +240,7 @@ class CodingAgent:
         )
 
     @staticmethod
-    def  _observation(
+    def _observation(
         ok: bool,
         tool: str,
         output: str,
@@ -234,6 +252,18 @@ class CodingAgent:
         if metadata is not None:
             payload["metadata"] = metadata
         return "OBSERVATION:\n" + json.dumps(payload, ensure_ascii=False)
+
+    def _approved(self, action: dict[str, Any], decision: Decision) -> bool:
+        """在高风险工具执行前调用外部确认回调。
+
+        非交互模式默认没有 approval_callback，所以保持原来的自动执行行为。
+        交互终端会注入回调，让 run_shell 等 high 风险工具先经过用户确认。
+        """
+        if action.get("type") != "tool":
+            return True
+        if decision.risk != "high" or self.approval_callback is None:
+            return True
+        return self.approval_callback(action, decision)
 
     def _state_prompt(self, perception: Perception, plan: Plan) -> str:
         """合并四类运行状态，作为下一轮模型输入。
