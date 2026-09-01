@@ -3,7 +3,8 @@
 这个文件只负责“启动一次 agent 运行”：
 1. 解析用户在命令行传入的任务和参数。
 2. 读取 .env 配置，创建模型客户端和工具注册表。
-3. 调用 CodingAgent.run()，并把结果打印或保存成 JSON。
+3. 根据参数选择单次任务模式或交互式终端模式。
+4. 单次任务完成后，把结果打印或保存成 JSON。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 from .agent import AgentConfig, CodingAgent
 from .config import load_dotenv
 from .model import OpenAICompatibleClient
+from .terminal import create_terminal_session
 from .tools import ToolRegistry
 
 
@@ -28,7 +30,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="smallagent",
         description="运行一个最小可用的本地编程智能体。",
     )
-    parser.add_argument("task", help="交给智能体完成的编程任务。")
+    parser.add_argument("task", nargs="?", help="交给智能体完成的编程任务。")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="进入可持续输入任务的交互式终端模式。",
+    )
     parser.add_argument(
         "--workspace",
         default=".",
@@ -56,15 +63,25 @@ def main(argv: list[str] | None = None) -> int:
 
     argv 主要用于测试；真实命令行运行时传 None，argparse 会自动读取 sys.argv。
     """
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.interactive and not args.task:
+        parser.error("the following arguments are required: task unless --interactive is used")
+
     # workspace 是工具允许访问的根目录，ToolRegistry 会把所有路径限制在这里。
     workspace = Path(args.workspace).resolve()
 
     # load_dotenv 只负责把 .env 写入环境变量；具体读哪些变量由 model.py 决定。
     load_dotenv()
     client = OpenAICompatibleClient.from_env()
+    config = AgentConfig(max_steps=args.max_steps)
+    if args.interactive:
+        # 交互式模式复用同一个 client/workspace/config，多条用户输入连续执行。
+        return create_terminal_session(client, workspace, config).run_forever()
+
     tools = ToolRegistry(workspace)
-    agent = CodingAgent(client, tools, AgentConfig(max_steps=args.max_steps))
+    agent = CodingAgent(client, tools, config)
+    assert args.task is not None
     result = agent.run(args.task)
 
     print(result.final_message)
