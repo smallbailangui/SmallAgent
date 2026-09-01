@@ -6,10 +6,11 @@ Git 仓库地址：https://github.com/smallbailangui/SmallAgent
 1. 安装 Python 3.10+。
 2. 参考 .env.example 设置环境变量 OPENAI_API_KEY；程序会自动读取当前目录的 .env，可选设置 SMALLAGENT_MODEL、OPENAI_BASE_URL。兼容服务也支持 BASE_URL 作为 OPENAI_BASE_URL 的别名。
 3. 执行：python -m smallagent "你的编程任务"
-4. 如需保存演示记录，加 --history-file tmp/history.json。
-5. 如需保存包含验收标准和结构化证据的完成度报告，加 --report-file tmp/report.json。
-6. 如需连续输入多个任务，执行：python -m smallagent --interactive。
-7. 交互模式也可以同时加 --history-file tmp/interactive-history.json 和 --report-file tmp/interactive-report.json；文件会保存为 JSON 数组，每条任务追加一条记录。
+4. 默认会在终端实时展示每轮 `Agent 状态汇总（Perception / Planning / Memory）`、`模型行动提案与本地决策（Action Proposal / Decision）`、`工具执行观察（Tool Observation）`、`人工安全确认（Human Approval）` 和 `Final 验收决策（Completion Check）` 等分隔块，突出感知、规划、记忆、决策和验收；如需关闭过程展示，加 --no-trace。
+5. 如需保存演示记录，加 --history-file tmp/history.json。
+6. 如需保存包含验收标准和结构化证据的完成度报告，加 --report-file tmp/report.json。
+7. 如需连续输入多个任务，执行：python -m smallagent --interactive。
+8. 交互模式也会默认显示同样的过程轨迹；可以同时加 --history-file tmp/interactive-history.json 和 --report-file tmp/interactive-report.json，文件会保存为 JSON 数组，每条任务追加一条记录。
 
 交互式终端：
 进入 --interactive 后，可以连续输入普通任务；每条任务都会走完整的模型、工具、验收闭环。
@@ -29,7 +30,7 @@ python -m unittest discover -s tests -v
 真实使用前的手动测试清单见 docs/manual-test.md。
 
 特色功能：
-SmallAgent 是一个不依赖 LangChain、LlamaIndex、OpenAI Agents SDK 等 agent 框架的简化编程智能体。它用 OpenAI 兼容 Chat Completions 与模型交互，但本地核心逻辑自行实现：终端层支持连续输入多个任务和高风险工具人工确认，感知层整理任务和工具观察，规划层维护可解释步骤，记忆层保存短期运行事实，决策层校验模型动作是否可执行，完成度检查层根据任务验收标准、结构化工具证据、工作区快照变化和推荐验证命令复核 final 是否可以停止；当 final 阶段只缺推荐验证时，agent 会自动运行一次推荐命令并重新评估。当前工具包括工作目录、文件列表、读文件、文件元信息、文本搜索、创建目录、写文件、追加文本、按行插入、文本替换、按行替换、单文件 patch、执行命令、Git 状态、Git diff、发现推荐验证和运行推荐验证。代码结构刻意拆成 terminal、agent、perception、planning、memory、decision、completion、tools、verification、model、cli、prompts，便于后续扩展长期记忆、风险分级、自检 harness、更多工具或替换模型提供方。
+SmallAgent 是一个不依赖 LangChain、LlamaIndex、OpenAI Agents SDK 等 agent 框架的简化编程智能体。它用 OpenAI 兼容 Chat Completions 与模型交互，但本地核心逻辑自行实现：终端层支持连续输入多个任务、高风险工具人工确认和默认实时轨迹显示，感知层整理任务和工具观察，规划层维护可解释步骤，记忆层保存短期运行事实，决策层校验模型动作是否可执行，完成度检查层根据任务验收标准、结构化工具证据、工作区快照变化和推荐验证命令复核 final 是否可以停止；当 final 阶段只缺推荐验证时，agent 会自动运行一次推荐命令并重新评估。当前工具包括工作目录、文件列表、读文件、文件元信息、文本搜索、创建目录、写文件、追加文本、按行插入、文本替换、按行替换、单文件 patch、执行命令、Git 状态、Git diff、发现推荐验证和运行推荐验证。代码结构刻意拆成 terminal、agent、perception、planning、memory、decision、completion、tools、verification、model、cli、trace、prompts，便于后续扩展长期记忆、风险分级、自检 harness、更多工具或替换模型提供方。
 
 提交说明：
 已推送历史不改写；中文提交说明见 docs/git-history.md，后续提交信息使用中文。

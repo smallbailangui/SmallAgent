@@ -22,8 +22,9 @@ python -m smallagent --workspace tmp/demo-workspace --history-file tmp/demo-hist
 
 1. 智能体通过本地工具读取或创建文件。
 2. 智能体用 `run_shell` 执行测试。
-3. 最终回答会说明修改内容和验证结果。
-4. `tmp/demo-history.json` 会保存模型动作和工具观察，便于讲解运行过程。
+3. 终端会默认用分隔块实时打印 `Agent 状态汇总（Perception / Planning / Memory）`、`模型行动提案与本地决策（Action Proposal / Decision）`、`工具执行观察（Tool Observation）`、`人工安全确认（Human Approval）` 和 `Final 验收决策（Completion Check）`，重点展示感知、规划、记忆、决策和验收，不展开工具参数和风险等级。
+4. 最终回答会说明修改内容和验证结果。
+5. `tmp/demo-history.json` 会保存模型动作和工具观察，便于讲解运行过程。
 
 ## 讲解要点
 

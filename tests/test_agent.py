@@ -754,6 +754,83 @@ class CliTests(unittest.TestCase):
             self.assertEqual(report["completion_check"]["evidence"][0]["tool"], "write_file")
             self.assertEqual(report["completion_check"]["changed_files"][0]["path"], "note.txt")
 
+    def test_cli_prints_trace_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"write_file","args":{"path":"note.txt","content":"ok"}}',
+                    '{"type":"tool","tool":"read_file","args":{"path":"note.txt"}}',
+                    '{"type":"final","message":"已创建 note.txt 并复查"}',
+                ]
+            )
+
+            output = io.StringIO()
+            with (
+                patch("smallagent.cli.OpenAICompatibleClient.from_env", return_value=client),
+                redirect_stdout(output),
+            ):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        tmp,
+                        "创建 note.txt",
+                    ]
+                )
+
+            rendered = output.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("========== 第 1 轮 | Agent 状态汇总（Perception / Planning / Memory） ==========", rendered)
+            self.assertIn(
+                "========== 第 1 轮 | 模型行动提案与本地决策（Action Proposal / Decision） ==========",
+                rendered,
+            )
+            self.assertIn("感知：", rendered)
+            self.assertIn("规划：", rendered)
+            self.assertIn("记忆：", rendered)
+            self.assertIn("验收：", rendered)
+            self.assertIn("行动提案：", rendered)
+            self.assertIn("决策：", rendered)
+            self.assertIn("流转：进入工具执行 write_file", rendered)
+            self.assertNotIn("工具参数：", rendered)
+            self.assertNotIn("风险等级：", rendered)
+            self.assertIn("========== 第 1 轮 | 工具执行观察（Tool Observation） ==========", rendered)
+            self.assertIn("Observation：工具 write_file 执行成功", rendered)
+            self.assertIn("记忆更新：", rendered)
+            self.assertIn("========== 第 3 轮 | Final 验收决策（Completion Check） ==========", rendered)
+            self.assertIn("验收结果：通过", rendered)
+            self.assertIn("========== 最终总结 ==========", rendered)
+
+    def test_cli_no_trace_keeps_quiet_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"已查看目录"}',
+                ]
+            )
+
+            output = io.StringIO()
+            with (
+                patch("smallagent.cli.OpenAICompatibleClient.from_env", return_value=client),
+                redirect_stdout(output),
+            ):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        tmp,
+                        "--no-trace",
+                        "查看目录",
+                    ]
+                )
+
+            rendered = output.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertNotIn("执行过程", rendered)
+            self.assertNotIn("最终总结", rendered)
+            self.assertIn("已查看目录", rendered)
+
     def test_cli_interactive_mode_runs_terminal_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             history_path = Path(tmp) / "interactive-history.json"

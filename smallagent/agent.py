@@ -49,6 +49,7 @@ class ResponseParseError(ValueError):
 
 
 ApprovalCallback = Callable[[dict[str, Any], Decision], bool]
+TraceCallback = Callable[[dict[str, Any]], None]
 
 
 def parse_agent_response(text: str) -> dict[str, Any]:
@@ -92,6 +93,7 @@ class CodingAgent:
         decision_policy: DecisionPolicy | None = None,
         completion_harness: CompletionHarness | None = None,
         approval_callback: ApprovalCallback | None = None,
+        trace_callback: TraceCallback | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -101,6 +103,7 @@ class CodingAgent:
         self.decision_policy = decision_policy or DecisionPolicy()
         self.completion_harness = completion_harness or CompletionHarness()
         self.approval_callback = approval_callback
+        self.trace_callback = trace_callback
 
     def run(self, task: str, session_context: str = "") -> AgentResult:
         """执行一个用户任务。
@@ -127,6 +130,7 @@ class CodingAgent:
 
         for step in range(1, self.config.max_steps + 1):
             perception.observe_step(step)
+            self._emit_trace(self._state_trace_event(step, perception, plan))
             # 让模型基于当前 messages 选择下一步：调用工具或返回 final。
             raw_response = self.client.complete(messages)
             messages.append({"role": "assistant", "content": raw_response})
@@ -134,6 +138,7 @@ class CodingAgent:
             try:
                 response = parse_agent_response(raw_response)
             except ResponseParseError as exc:
+                self._emit_trace({"event": "parse_error", "step": step, "error": str(exc)})
                 messages.append(
                     {
                         "role": "user",
@@ -150,6 +155,14 @@ class CodingAgent:
             # 决策层先检查动作格式和风险，再允许真正执行工具。
             decision = self.decision_policy.decide(response)
             if not decision.allowed:
+                self._emit_trace(
+                    {
+                        "event": "decision_blocked",
+                        "step": step,
+                        "reason": decision.reason,
+                        "risk": decision.risk,
+                    }
+                )
                 messages.append(
                     {
                         "role": "user",
@@ -162,16 +175,30 @@ class CodingAgent:
                     }
                 )
                 continue
+            self._emit_trace(
+                {
+                    "event": "model_action",
+                    "step": step,
+                    "action_type": response["type"],
+                    "tool": response.get("tool"),
+                    "reason": response.get("reason", ""),
+                    "decision": decision.reason,
+                }
+            )
 
             if response["type"] == "final":
                 message = str(response.get("message", "")).strip()
                 # final 不会被直接相信，必须先通过 completion harness。
                 completion = self.completion_harness.evaluate(message)
+                self._emit_final_check(step, completion)
                 if not completion.accepted:
                     # final 是模型提出的“我完成了”。如果只差推荐验证命令，
                     # agent 可以自己补一次验收，而不是把同一个请求再丢回模型。
-                    plan = self._try_auto_verification(perception, plan, messages, completion)
-                    completion = self.completion_harness.evaluate(message)
+                    evidence_count = len(self.completion_harness.evidence)
+                    plan = self._try_auto_verification(perception, plan, messages, completion, step)
+                    if len(self.completion_harness.evidence) > evidence_count:
+                        completion = self.completion_harness.evaluate(message)
+                        self._emit_final_check(step, completion)
                 if not completion.accepted:
                     messages.append(
                         {
@@ -186,6 +213,14 @@ class CodingAgent:
             tool_name = str(response.get("tool", ""))
             args = response.get("args", {})
             if not self._approved(response, decision):
+                self._emit_trace(
+                    {
+                        "event": "approval",
+                        "step": step,
+                        "tool": tool_name,
+                        "allowed": False,
+                    }
+                )
                 messages.append(
                     {
                         "role": "user",
@@ -198,6 +233,15 @@ class CodingAgent:
                     }
                 )
                 continue
+            if decision.risk == "high" and self.approval_callback is not None:
+                self._emit_trace(
+                    {
+                        "event": "approval",
+                        "step": step,
+                        "tool": tool_name,
+                        "allowed": True,
+                    }
+                )
             if not isinstance(args, dict):
                 result = {
                     "ok": False,
@@ -215,6 +259,19 @@ class CodingAgent:
             # 保存验收证据
             self.completion_harness.record_tool_call(tool_name, args if isinstance(args, dict) else {}, result)
             plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
+            self._emit_trace(
+                {
+                    "event": "tool_result",
+                    "step": step,
+                    "tool": result["tool"],
+                    "ok": result["ok"],
+                    "summary": result.get("output", ""),
+                    "error": result.get("error", ""),
+                    "perception": self._perception_summary(perception),
+                    "memory": self._memory_summary(),
+                    "plan": self._plan_summary(plan),
+                }
+            )
             messages.append(
                 {
                     "role": "user",
@@ -232,6 +289,7 @@ class CodingAgent:
 
         # 超过最大步数仍未 final 时，返回停止信息，同时附带当前完成度检查结果。
         completion = self.completion_harness.evaluate("")
+        self._emit_final_check(self.config.max_steps, completion)
         return AgentResult(
             f"Stopped after {self.config.max_steps} steps without a final answer.",
             self.config.max_steps,
@@ -294,6 +352,7 @@ class CodingAgent:
         plan: Plan,
         messages: list[dict[str, str]],
         completion: CompletionCheck,
+        step: int,
     ) -> Plan:
         """在 final 前自动补一次推荐验证。
 
@@ -310,11 +369,31 @@ class CodingAgent:
             return plan
 
         args = {"index": 1, "timeout": 120}
+        self._emit_trace(
+            {
+                "event": "auto_verification",
+                "step": step,
+                "command": command.command,
+            }
+        )
         result = self.tools.run("run_recommended_verification", args)
         perception.observe_tool_result(result)
         self.memory.remember_tool_result(result)
         self.completion_harness.record_tool_call("run_recommended_verification", args, result)
         plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
+        self._emit_trace(
+            {
+                "event": "tool_result",
+                "step": step,
+                "tool": result["tool"],
+                "ok": result["ok"],
+                "summary": result.get("output", ""),
+                "error": result.get("error", ""),
+                "perception": self._perception_summary(perception),
+                "memory": self._memory_summary(),
+                "plan": self._plan_summary(plan),
+            }
+        )
         messages.append(
             {
                 "role": "user",
@@ -334,3 +413,60 @@ class CodingAgent:
             }
         )
         return plan
+
+    def _emit_final_check(self, step: int, completion: CompletionCheck) -> None:
+        self._emit_trace(
+            {
+                "event": "final_check",
+                "step": step,
+                "accepted": completion.accepted,
+                "reasons": completion.reasons,
+            }
+        )
+
+    def _emit_trace(self, event: dict[str, Any]) -> None:
+        """向外部报告公开可展示的执行轨迹；trace 失败不影响 agent 本体运行。"""
+        if self.trace_callback is None:
+            return
+        try:
+            self.trace_callback(event)
+        except Exception:
+            return
+
+    def _state_trace_event(self, step: int, perception: Perception, plan: Plan) -> dict[str, Any]:
+        return {
+            "event": "step_started",
+            "step": step,
+            "perception": self._perception_summary(perception),
+            "plan": self._plan_summary(plan),
+            "memory": self._memory_summary(),
+            "acceptance": self._acceptance_summary(),
+        }
+
+    @staticmethod
+    def _perception_summary(perception: Perception) -> str:
+        state = perception.state
+        if not state.last_tool:
+            return f"任务：{state.task}"
+        status = "成功" if state.last_ok else "失败"
+        preview = state.last_output_preview.replace("\n", " ")[:120]
+        return f"上次观察：{state.last_tool} {status}；{preview}"
+
+    @staticmethod
+    def _plan_summary(plan: Plan) -> str:
+        if not plan.steps:
+            return f"目标：{plan.goal}"
+        return " -> ".join(plan.steps[-3:])
+
+    def _memory_summary(self) -> str:
+        if not self.memory.items:
+            return "暂无短期记忆"
+        latest = self.memory.items[-1].content.replace("\n", " ")[:140]
+        return f"已记录 {len(self.memory.items)} 条；最近：{latest}"
+
+    def _acceptance_summary(self) -> str:
+        count = len(self.completion_harness.criteria)
+        if count == 0:
+            return "暂无验收标准"
+        descriptions = [criterion.description for criterion in self.completion_harness.criteria[:3]]
+        return f"{count} 条验收标准；" + "；".join(descriptions)

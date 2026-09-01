@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import Any, Callable, TextIO
 
 from .agent import AgentConfig, AgentResult, ChatClient, CodingAgent
 from .decision import Decision
 from .tools import ToolRegistry
+from .trace import format_final_block, format_trace_event
 
 
 InputFunc = Callable[[str], str]
@@ -59,6 +60,7 @@ class TerminalSession:
     output: TextIO | None = None
     history_file: Path | None = None
     report_file: Path | None = None
+    show_trace: bool = False
     summaries: list[TaskSummary] = field(default_factory=list)
 
     def run_forever(self) -> int:
@@ -140,7 +142,13 @@ class TerminalSession:
 
     def _run_task(self, task: str) -> AgentResult:
         """把普通用户输入交给 CodingAgent 执行，并记录任务摘要。"""
-        agent = CodingAgent(self.client, self.tools, self.config, approval_callback=self._approve_tool)
+        agent = CodingAgent(
+            self.client,
+            self.tools,
+            self.config,
+            approval_callback=self._approve_tool,
+            trace_callback=self._print_trace_event if self.show_trace else None,
+        )
         result = agent.run(task, self._session_context_prompt())
         accepted = result.completion_check.accepted if result.completion_check else None
         summary = TaskSummary(
@@ -151,9 +159,16 @@ class TerminalSession:
         )
         self.summaries.append(summary)
         self._save_task_artifacts(summary, result)
-        self._print(result.final_message)
-        self._print(f"执行轮数: {result.steps}")
+        if self.show_trace:
+            self._print(format_final_block(result.final_message, result.steps))
+        else:
+            self._print(result.final_message)
+            self._print(f"执行轮数: {result.steps}")
         return result
+
+    def _print_trace_event(self, event: dict[str, Any]) -> None:
+        """显示适合录屏的公开执行轨迹。"""
+        self._print(format_trace_event(event))
 
     def _retry_last_task(self) -> None:
         """重新执行最近一条任务。
@@ -365,6 +380,7 @@ def create_terminal_session(
     output: TextIO | None = None,
     history_file: Path | None = None,
     report_file: Path | None = None,
+    show_trace: bool = False,
 ) -> TerminalSession:
     """从 CLI 参数创建交互式会话对象。"""
     return TerminalSession(
@@ -376,4 +392,5 @@ def create_terminal_session(
         output=output,
         history_file=history_file,
         report_file=report_file,
+        show_trace=show_trace,
     )

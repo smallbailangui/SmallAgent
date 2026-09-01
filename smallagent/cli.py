@@ -18,6 +18,7 @@ from .config import load_dotenv
 from .model import OpenAICompatibleClient
 from .terminal import create_terminal_session
 from .tools import ToolRegistry
+from .trace import format_final_block, format_trace_event
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-file",
         help="可选：保存最终结果和完成度检查报告的 JSON 文件路径。",
     )
+    parser.add_argument(
+        "--show-trace",
+        action="store_true",
+        help="兼容旧用法：过程展示现在默认开启。",
+    )
+    parser.add_argument(
+        "--no-trace",
+        action="store_false",
+        dest="trace",
+        default=True,
+        help="关闭默认的终端过程展示，只打印最终结果。",
+    )
     return parser
 
 
@@ -84,15 +97,24 @@ def main(argv: list[str] | None = None) -> int:
             config,
             history_file=Path(args.history_file).resolve() if args.history_file else None,
             report_file=Path(args.report_file).resolve() if args.report_file else None,
+            show_trace=args.trace,
         ).run_forever()
 
     tools = ToolRegistry(workspace)
-    agent = CodingAgent(client, tools, config)
+    agent = CodingAgent(
+        client,
+        tools,
+        config,
+        trace_callback=(lambda event: print(format_trace_event(event))) if args.trace else None,
+    )
     assert args.task is not None
     result = agent.run(args.task)
 
-    print(result.final_message)
-    print(f"\n执行轮数: {result.steps}")
+    if args.trace:
+        print(format_final_block(result.final_message, result.steps))
+    else:
+        print(result.final_message)
+        print(f"\n执行轮数: {result.steps}")
     if args.history_file:
         # history 保存完整消息轨迹，适合复盘模型每一步 JSON 和工具观察。
         history_path = Path(args.history_file).resolve()
