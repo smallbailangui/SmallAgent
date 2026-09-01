@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TextIO
@@ -32,6 +33,15 @@ class TaskSummary:
         status = "通过" if self.accepted else "未通过" if self.accepted is False else "未知"
         return f"{index}. [{status}] {self.task}（{self.steps} 轮）"
 
+    def to_dict(self) -> dict[str, object]:
+        """转换为可写入 JSON 的稳定结构。"""
+        return {
+            "task": self.task,
+            "final_message": self.final_message,
+            "steps": self.steps,
+            "accepted": self.accepted,
+        }
+
 
 @dataclass
 class TerminalSession:
@@ -46,6 +56,8 @@ class TerminalSession:
     config: AgentConfig
     input_func: InputFunc = input
     output: TextIO | None = None
+    history_file: Path | None = None
+    report_file: Path | None = None
     summaries: list[TaskSummary] = field(default_factory=list)
 
     def run_forever(self) -> int:
@@ -97,19 +109,60 @@ class TerminalSession:
     def _run_task(self, task: str) -> AgentResult:
         """把普通用户输入交给 CodingAgent 执行，并记录任务摘要。"""
         agent = CodingAgent(self.client, self.tools, self.config)
-        result = agent.run(task)
+        result = agent.run(task, self._session_context_prompt())
         accepted = result.completion_check.accepted if result.completion_check else None
-        self.summaries.append(
-            TaskSummary(
-                task=task,
-                final_message=result.final_message,
-                steps=result.steps,
-                accepted=accepted,
-            )
+        summary = TaskSummary(
+            task=task,
+            final_message=result.final_message,
+            steps=result.steps,
+            accepted=accepted,
         )
+        self.summaries.append(summary)
+        self._save_task_artifacts(summary, result)
         self._print(result.final_message)
         self._print(f"执行轮数: {result.steps}")
         return result
+
+    def _session_context_prompt(self) -> str:
+        """生成给下一条任务使用的会话摘要。
+
+        这里只放最近 5 条任务的简短结果，避免终端会话越聊越长时撑爆模型上下文。
+        """
+        if not self.summaries:
+            return ""
+        lines = ["SESSION_CONTEXT:", "本终端会话最近任务摘要："]
+        start = max(0, len(self.summaries) - 5)
+        for index, summary in enumerate(self.summaries[start:], start + 1):
+            lines.append(summary.to_line(index))
+            lines.append(f"- 结果：{summary.final_message[:240]}")
+        return "\n".join(lines)
+
+    def _save_task_artifacts(self, summary: TaskSummary, result: AgentResult) -> None:
+        """按需保存交互式任务的 history 和 report。
+
+        交互模式会连续运行多个任务，所以文件内容使用 JSON 数组；每完成一条任务就追加一条记录。
+        """
+        task_index = len(self.summaries)
+        if self.history_file is not None:
+            self._append_json_record(
+                self.history_file,
+                {
+                    "task_index": task_index,
+                    **summary.to_dict(),
+                    "history": result.history,
+                },
+            )
+        if self.report_file is not None:
+            self._append_json_record(
+                self.report_file,
+                {
+                    "task_index": task_index,
+                    **summary.to_dict(),
+                    "completion_check": result.completion_check.to_dict()
+                    if result.completion_check
+                    else None,
+                },
+            )
 
     def _print_help(self) -> None:
         """显示终端内置命令。"""
@@ -128,12 +181,18 @@ class TerminalSession:
 
     def _print_status(self) -> None:
         """显示当前终端会话状态，不请求模型。"""
+        model = getattr(self.client, "model", "<unknown>")
+        base_url = getattr(self.client, "base_url", "<unknown>")
         self._print(
             "\n".join(
                 [
                     f"工作区：{self.tools.workspace}",
+                    f"模型：{model}",
+                    f"接口地址：{base_url}",
                     f"最大轮数：{self.config.max_steps}",
                     f"已完成任务数：{len(self.summaries)}",
+                    f"History 文件：{self.history_file or '未启用'}",
+                    f"Report 文件：{self.report_file or '未启用'}",
                 ]
             )
         )
@@ -156,6 +215,21 @@ class TerminalSession:
         else:
             print(message, file=self.output)
 
+    def _append_json_record(self, path: Path, record: dict[str, object]) -> None:
+        """向 JSON 数组文件追加一条记录。
+
+        文件不存在时创建新数组；文件存在但为空时也按空数组处理。
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.read_text(encoding="utf-8").strip():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError(f"{path} must contain a JSON array")
+        else:
+            data = []
+        data.append(record)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+
 
 def create_terminal_session(
     client: ChatClient,
@@ -163,6 +237,8 @@ def create_terminal_session(
     config: AgentConfig,
     input_func: InputFunc | None = None,
     output: TextIO | None = None,
+    history_file: Path | None = None,
+    report_file: Path | None = None,
 ) -> TerminalSession:
     """从 CLI 参数创建交互式会话对象。"""
     return TerminalSession(
@@ -172,4 +248,6 @@ def create_terminal_session(
         # 不在函数签名里绑定 input，测试才能通过 patch builtins.input 模拟终端输入。
         input_func=input if input_func is None else input_func,
         output=output,
+        history_file=history_file,
+        report_file=report_file,
     )

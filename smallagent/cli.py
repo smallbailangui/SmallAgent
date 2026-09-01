@@ -77,7 +77,14 @@ def main(argv: list[str] | None = None) -> int:
     config = AgentConfig(max_steps=args.max_steps)
     if args.interactive:
         # 交互式模式复用同一个 client/workspace/config，多条用户输入连续执行。
-        return create_terminal_session(client, workspace, config).run_forever()
+        # 如果传入 history/report 文件，终端层会把每条任务追加成 JSON 数组记录。
+        return create_terminal_session(
+            client,
+            workspace,
+            config,
+            history_file=Path(args.history_file).resolve() if args.history_file else None,
+            report_file=Path(args.report_file).resolve() if args.report_file else None,
+        ).run_forever()
 
     tools = ToolRegistry(workspace)
     agent = CodingAgent(client, tools, config)
