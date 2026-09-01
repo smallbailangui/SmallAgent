@@ -201,6 +201,54 @@ class AgentTests(unittest.TestCase):
                 any("recommended_verification" in item.tags for item in result.completion_check.evidence)
             )
 
+    def test_agent_asks_approval_before_high_risk_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            approvals: list[str] = []
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"run_shell","args":{"command":"python --version"}}',
+                    '{"type":"final","message":"已执行检查"}',
+                ]
+            )
+
+            def approve(action: dict[str, object], decision: object) -> bool:
+                approvals.append(str(action.get("tool")))
+                return True
+
+            agent = CodingAgent(
+                client,
+                ToolRegistry(Path(tmp)),
+                AgentConfig(max_steps=3),
+                approval_callback=approve,
+            )
+
+            result = agent.run("查看目录")
+
+            self.assertEqual(approvals, ["run_shell"])
+            self.assertEqual(result.final_message, "已执行检查")
+
+    def test_agent_reports_denied_high_risk_tool_to_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"run_shell","args":{"command":"python --version"}}',
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"已改用安全方式查看目录"}',
+                ]
+            )
+            agent = CodingAgent(
+                client,
+                ToolRegistry(Path(tmp)),
+                AgentConfig(max_steps=4),
+                approval_callback=lambda action, decision: False,
+            )
+
+            result = agent.run("查看目录")
+            joined_history = "\n".join(item["content"] for item in result.history)
+
+            self.assertIn("用户拒绝执行高风险工具 run_shell", joined_history)
+            self.assertEqual(result.final_message, "已改用安全方式查看目录")
+
 
 class ArchitectureTests(unittest.TestCase):
     def test_perception_updates_from_tool_result(self) -> None:
@@ -622,6 +670,55 @@ class TerminalSessionTests(unittest.TestCase):
             self.assertIn("任务历史", rendered)
             self.assertFalse(session.summaries[0].accepted)
             self.assertEqual(report[0]["error"], "RuntimeError: temporary model failure")
+
+    def test_terminal_session_prompts_for_high_risk_tool_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"run_shell","args":{"command":"python --version"}}',
+                    '{"type":"final","message":"检查完成"}',
+                ]
+            )
+            inputs = iter(["运行版本检查", "y", "/exit"])
+            session = TerminalSession(
+                client=client,
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=3),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+            )
+
+            session.run_forever()
+            rendered = output.getvalue()
+
+            self.assertIn("即将执行高风险工具：run_shell", rendered)
+            self.assertIn("检查完成", rendered)
+
+    def test_terminal_session_can_deny_high_risk_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"run_shell","args":{"command":"python --version"}}',
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"已跳过命令"}',
+                ]
+            )
+            inputs = iter(["查看目录", "n", "/exit"])
+            session = TerminalSession(
+                client=client,
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=4),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+            )
+
+            session.run_forever()
+            rendered = output.getvalue()
+
+            self.assertIn("已拒绝执行该工具", rendered)
+            self.assertIn("已跳过命令", rendered)
 
     def test_terminal_session_runs_multiple_tasks_and_keeps_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
