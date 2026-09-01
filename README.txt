@@ -9,12 +9,14 @@ Git 仓库地址：https://github.com/smallbailangui/SmallAgent
 4. 如需保存演示记录，加 --history-file tmp/history.json。
 5. 如需保存包含验收标准和结构化证据的完成度报告，加 --report-file tmp/report.json。
 6. 如需连续输入多个任务，执行：python -m smallagent --interactive。
+7. 交互模式也可以同时加 --history-file tmp/interactive-history.json 和 --report-file tmp/interactive-report.json；文件会保存为 JSON 数组，每条任务追加一条记录。
 
 交互式终端：
 进入 --interactive 后，可以连续输入普通任务；每条任务都会走完整的模型、工具、验收闭环。
+终端层会保留最近任务摘要，并在下一条任务开始时注入给 agent，帮助它理解“继续”“它”等上下文指代。
 内置命令包括：
 - /help：查看可用命令。
-- /status：查看当前工作区、最大执行轮数和已完成任务数。
+- /status：查看当前工作区、模型、接口地址、最大执行轮数、记录文件和已完成任务数。
 - /history：查看本次终端会话内的任务摘要。
 - /clear：清空本次终端会话摘要。
 - /exit 或 /quit：退出交互模式。

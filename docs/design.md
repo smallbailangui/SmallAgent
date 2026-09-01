@@ -19,7 +19,7 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 
 ## 交互式终端
 
-`smallagent.terminal` 是单次任务 agent 外面的一层 REPL 外壳。它的职责是管理终端输入输出和本次会话摘要，不直接做模型推理，也不直接执行文件工具。
+`smallagent.terminal` 是单次任务 agent 外面的一层 REPL 外壳。它的职责是管理终端输入输出、本次会话摘要、交互式 history/report 记录，不直接做模型推理，也不直接执行文件工具。
 
 当前交互模式支持：
 
@@ -30,7 +30,11 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 - `/clear`：清空本次终端会话摘要。
 - `/exit` 或 `/quit`：退出交互模式。
 
-这个设计先实现“持续输入多个任务”，但每条任务内部仍然是独立的 `CodingAgent` 运行。这样可以先获得终端 agent 的使用形态，同时避免过早把单任务 memory、completion harness 和会话级长期记忆混在一起。后续如果要让 agent 真正跨任务继承上下文，可以在 `TerminalSession` 中保留更丰富的 session memory，并在创建 `CodingAgent` 时注入到 prompt 或 memory 模块。
+这个设计先实现“持续输入多个任务”，但每条任务内部仍然是独立的 `CodingAgent` 运行。这样可以先获得终端 agent 的使用形态，同时避免过早把单任务 memory、completion harness 和会话级长期记忆混在一起。
+
+为了让连续输入更自然，`TerminalSession` 会把最近 5 条任务摘要渲染成 `SESSION_CONTEXT`，并在下一条普通任务开始前传给 `CodingAgent.run()`。这使模型可以更容易理解“继续上一个任务”“把它再检查一遍”这类指代。这里注入的是摘要，不是完整历史，所以它适合提供方向感；真正的工具证据和完成度检查仍然按每条任务单独计算。
+
+交互模式复用单次任务的 `--history-file` 和 `--report-file` 参数。单次任务模式写入一个 JSON 对象；交互模式会把每条任务追加成 JSON 数组元素，包含 `task_index`、任务文本、final、轮数、是否通过验收，以及对应的完整 history 或 completion report。这样终端 agent 可以连续使用，同时仍然保留可复盘、可考核的运行记录。
 
 ## 可扩展位置
 
