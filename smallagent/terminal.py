@@ -131,6 +131,9 @@ class TerminalSession:
             self.summaries.clear()
             self._print("已清空当前终端会话摘要。")
             return False
+        if normalized == "/retry":
+            self._retry_last_task()
+            return False
 
         self._print(f"未知命令：{command}。输入 /help 查看可用命令。")
         return False
@@ -151,6 +154,22 @@ class TerminalSession:
         self._print(result.final_message)
         self._print(f"执行轮数: {result.steps}")
         return result
+
+    def _retry_last_task(self) -> None:
+        """重新执行最近一条任务。
+
+        /retry 复用 summary 里保存的原始任务文本，适合模型空响应、网络中断或用户拒绝命令后
+        想快速再试一次的场景。重试本身会生成新的 summary 和记录文件条目。
+        """
+        if not self.summaries:
+            self._print("暂无可重试任务。")
+            return
+        task = self.summaries[-1].task
+        self._print(f"重试任务：{task}")
+        try:
+            self._run_task(task)
+        except Exception as exc:  # noqa: BLE001 - /retry 也要保持交互终端不退出
+            self._record_task_failure(task, exc)
 
     def _session_context_prompt(self) -> str:
         """生成给下一条任务使用的会话摘要。
@@ -257,6 +276,7 @@ class TerminalSession:
                     "/status  显示当前工作区和会话状态",
                     "/history 显示本次终端会话的任务摘要",
                     "/clear   清空本次终端会话摘要",
+                    "/retry   重新执行最近一条任务",
                     "/exit    退出交互模式",
                 ]
             )

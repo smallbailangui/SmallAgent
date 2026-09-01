@@ -12,6 +12,8 @@ SMALLAGENT_MODEL=你的模型名
 OPENAI_BASE_URL=https://api.deepseek.com
 ```
 
+也可以使用 `BASE_URL` 作为 `OPENAI_BASE_URL` 的兼容别名，但推荐优先使用 `OPENAI_BASE_URL`。
+
 2. 运行自动测试：
 
 ```powershell
@@ -65,6 +67,7 @@ python -m smallagent --interactive --history-file tmp/interactive-history.json -
 - 终端应提示 `即将执行高风险工具：run_shell`。
 - 输入 `n` 时，应拒绝执行，并让模型选择其他方式继续或说明无法执行。
 - 再次输入同一任务并回答 `y` 时，应执行命令并返回结果。
+- 如果模型服务返回空内容或网络中断，可以输入 `/retry` 重新执行最近一条任务。
 
 ## 测试 4：临时目录写文件
 
@@ -111,4 +114,5 @@ python -m smallagent --workspace tmp/manual-agent --interactive --history-file t
 - 能在高风险命令前询问用户。
 - 能写入文件并在修改后验证。
 - 能保存 `history` 和 `report`，并在下次启动时恢复摘要。
+- 遇到模型空响应、网络中断等临时失败时，可以用 `/retry` 快速重试。
 - 自动测试 `scripts/check.ps1` 通过。

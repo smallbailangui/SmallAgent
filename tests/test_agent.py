@@ -524,6 +524,20 @@ class ConfigTests(unittest.TestCase):
 
 
 class ModelClientTests(unittest.TestCase):
+    def test_model_client_accepts_base_url_alias(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENAI_API_KEY": "test-key",
+                "SMALLAGENT_MODEL": "demo-model",
+                "BASE_URL": "https://api.example.com/",
+            },
+            clear=True,
+        ):
+            client = OpenAICompatibleClient.from_env()
+
+            self.assertEqual(client.base_url, "https://api.example.com")
+
     def test_model_client_wraps_incomplete_read(self) -> None:
         client = OpenAICompatibleClient(api_key="test-key", model="test-model", max_retries=0)
 
@@ -628,7 +642,7 @@ class TerminalSessionTests(unittest.TestCase):
     def test_terminal_session_handles_builtin_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = io.StringIO()
-            inputs = iter(["/status", "/history", "/clear", "/unknown", "/exit"])
+            inputs = iter(["/status", "/history", "/retry", "/clear", "/unknown", "/exit"])
             session = TerminalSession(
                 client=FakeClient([]),
                 tools=ToolRegistry(Path(tmp)),
@@ -643,6 +657,7 @@ class TerminalSessionTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("工作区", rendered)
             self.assertIn("暂无任务历史", rendered)
+            self.assertIn("暂无可重试任务", rendered)
             self.assertIn("已清空当前终端会话摘要", rendered)
             self.assertIn("未知命令", rendered)
 
@@ -719,6 +734,35 @@ class TerminalSessionTests(unittest.TestCase):
 
             self.assertIn("已拒绝执行该工具", rendered)
             self.assertIn("已跳过命令", rendered)
+
+    def test_terminal_session_retries_last_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"第一次完成"}',
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"重试完成"}',
+                ]
+            )
+            inputs = iter(["查看目录", "/retry", "/history", "/exit"])
+            session = TerminalSession(
+                client=client,
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=3),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+            )
+
+            session.run_forever()
+            rendered = output.getvalue()
+
+            self.assertEqual(len(session.summaries), 2)
+            self.assertEqual(session.summaries[0].task, "查看目录")
+            self.assertEqual(session.summaries[1].task, "查看目录")
+            self.assertIn("重试任务：查看目录", rendered)
+            self.assertIn("重试完成", rendered)
 
     def test_terminal_session_runs_multiple_tasks_and_keeps_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

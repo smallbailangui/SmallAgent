@@ -28,6 +28,7 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 - `/status`：显示工作区、最大轮数和本次会话已完成任务数。
 - `/history`：显示本次终端会话内的任务摘要和 final 结果预览。
 - `/clear`：清空本次终端会话摘要。
+- `/retry`：重新执行最近一条任务，重试会生成新的摘要和记录文件条目。
 - `/exit` 或 `/quit`：退出交互模式。
 
 这个设计先实现“持续输入多个任务”，但每条任务内部仍然是独立的 `CodingAgent` 运行。这样可以先获得终端 agent 的使用形态，同时避免过早把单任务 memory、completion harness 和会话级长期记忆混在一起。
@@ -37,6 +38,8 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 交互模式复用单次任务的 `--history-file` 和 `--report-file` 参数。单次任务模式写入一个 JSON 对象；交互模式会把每条任务追加成 JSON 数组元素，包含 `task_index`、任务文本、final、轮数、是否通过验收，以及对应的完整 history 或 completion report。这样终端 agent 可以连续使用，同时仍然保留可复盘、可考核的运行记录。
 
 交互模式还会为 high 风险工具启用人工确认。`CodingAgent` 在执行工具前读取 `DecisionPolicy` 的风险等级；如果工具是 `run_shell` 或 `run_recommended_verification`，并且终端层提供了 approval callback，agent 会先暂停并交给 `TerminalSession` 询问用户。用户输入 `y` 或 `yes` 才会继续执行，否则 agent 会把“用户拒绝执行”作为观察结果反馈给模型，让模型选择更安全的后续动作。
+
+为了贴近真实终端使用，`TerminalSession` 还支持 `/retry`。模型空响应、网络中断或用户拒绝高风险命令后，最近任务都会以摘要形式保留下来；用户输入 `/retry` 时，终端层会复用最近任务文本重新调用 `CodingAgent.run()`，并把这次重试作为新的任务记录追加到 history/report 文件。
 
 ## 可扩展位置
 

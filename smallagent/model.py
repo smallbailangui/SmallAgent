@@ -39,10 +39,12 @@ class OpenAICompatibleClient:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required")
+        # 兼容一些教程常写的 BASE_URL；正式变量仍推荐 OPENAI_BASE_URL。
+        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("BASE_URL") or "https://api.openai.com/v1"
         return cls(
             api_key=api_key,
             model=os.getenv("SMALLAGENT_MODEL", "gpt-4o-mini"),
-            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            base_url=base_url.rstrip("/"),
             temperature=float(os.getenv("SMALLAGENT_TEMPERATURE", "0.2")),
             max_retries=int(os.getenv("SMALLAGENT_MODEL_RETRIES", "1")),
         )
