@@ -36,6 +36,8 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 
 交互模式复用单次任务的 `--history-file` 和 `--report-file` 参数。单次任务模式写入一个 JSON 对象；交互模式会把每条任务追加成 JSON 数组元素，包含 `task_index`、任务文本、final、轮数、是否通过验收，以及对应的完整 history 或 completion report。这样终端 agent 可以连续使用，同时仍然保留可复盘、可考核的运行记录。
 
+交互模式还会为 high 风险工具启用人工确认。`CodingAgent` 在执行工具前读取 `DecisionPolicy` 的风险等级；如果工具是 `run_shell` 或 `run_recommended_verification`，并且终端层提供了 approval callback，agent 会先暂停并交给 `TerminalSession` 询问用户。用户输入 `y` 或 `yes` 才会继续执行，否则 agent 会把“用户拒绝执行”作为观察结果反馈给模型，让模型选择更安全的后续动作。
+
 ## 可扩展位置
 
 - 新增工具：在 `ToolRegistry.__post_init__` 中注册函数。
@@ -44,9 +46,9 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 - 加强安全策略：扩展 `ToolRegistry._check_command`。
 - 扩展记忆：替换 `ShortTermMemory` 为文件存储、数据库或向量检索。
 - 扩展规划：替换 `Planner`，加入任务分解、检查点和回滚策略。
-- 扩展决策：`DecisionPolicy` 已输出基础风险等级，后续可加入人工确认和工具白名单。
+- 扩展决策：`DecisionPolicy` 已输出基础风险等级，交互终端已对 high 风险工具加入人工确认；后续可加入更细的工具白名单和按项目配置的权限策略。
 - 扩展完成度检查：`CompletionHarness` 已在 final 前检查空回答、未处理失败、修改后验证证据和任务验收标准；后续可接入测试发现、静态分析和更细粒度的完成判据。
-- 扩展交互终端：`TerminalSession` 已支持连续任务和内置命令；后续可加入任务中断、继续执行、人工确认、会话级记忆和历史持久化。
+- 扩展交互终端：`TerminalSession` 已支持连续任务、内置命令、人工确认、会话级摘要和记录文件；后续可加入任务中断、继续执行和历史持久化加载。
 
 ## 完成度检查
 
