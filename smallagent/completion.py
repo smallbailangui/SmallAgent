@@ -12,7 +12,15 @@ from .verification import VerificationCommand, discover_verification_commands, n
 
 # 这三组工具分类是 harness 的证据标签来源。
 # 一个工具可以属于多个类别，例如 run_shell 既能提供上下文，也能提供验证证据。
-MODIFYING_TOOLS = {"create_directory", "write_file", "append_text", "insert_text", "replace_text", "replace_lines"}
+MODIFYING_TOOLS = {
+    "create_directory",
+    "write_file",
+    "append_text",
+    "insert_text",
+    "replace_text",
+    "replace_lines",
+    "patch_file",
+}
 VERIFICATION_TOOLS = {"read_file", "list_files", "run_shell", "run_recommended_verification"}
 CONTEXT_TOOLS = {
     "get_cwd",
@@ -387,6 +395,7 @@ class CompletionHarness:
             "insert_text",
             "replace_text",
             "replace_lines",
+            "patch_file",
             "file_info",
         } and isinstance(args.get("path"), str):
             details["path"] = args["path"]

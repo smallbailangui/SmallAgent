@@ -77,11 +77,13 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 工具层围绕 coding agent 的常见工作流拆成四类：
 
 - 上下文工具：`get_cwd`、`list_files`、`read_file`、`file_info`、`search_text`，用于看项目形状、读取文件和查找符号或错误文本。
-- 编辑工具：`create_directory`、`write_file`、`append_text`、`insert_text`、`replace_text`、`replace_lines`，用于创建结构、整体写入、追加内容和小范围修改。
+- 编辑工具：`create_directory`、`write_file`、`append_text`、`insert_text`、`replace_text`、`replace_lines`、`patch_file`，用于创建结构、整体写入、追加内容、按行修改和应用单文件 unified diff。
 - 验证工具：`run_shell`、`discover_verification`、`run_recommended_verification`，用于执行检查命令和 harness 推荐命令。
 - Git 工具：`git_status`、`git_diff`，用于查看工作区变更。
 
-工具结果保留 `ok`、`tool`、`output`、`error` 四个基础字段；支持结构化数据的工具还会返回 `metadata`。例如 `search_text` 会返回匹配数量和命中行，细粒度编辑工具会返回路径、行号或追加字节数，`run_shell` 会返回 command、returncode、stdout、stderr，推荐验证工具会额外标记 `recommended_verification`。`smallagent.agent` 会把 metadata 放回 `OBSERVATION`，模型和完成度检查都能使用同一份结构化证据。
+工具结果保留 `ok`、`tool`、`output`、`error` 四个基础字段；支持结构化数据的工具还会返回 `metadata`。例如 `search_text` 会返回匹配数量和命中行，细粒度编辑工具会返回路径、行号或追加字节数，`patch_file` 会返回 hunk 数和新增/删除行数，`run_shell` 会返回 command、returncode、stdout、stderr，推荐验证工具会额外标记 `recommended_verification`。`smallagent.agent` 会把 metadata 放回 `OBSERVATION`，模型和完成度检查都能使用同一份结构化证据。
+
+`patch_file` 只处理单个已存在文本文件。它接受 `path` 和 `patch`，其中 `patch` 必须是 unified diff hunk；如果 diff 带有 `--- a/file` / `+++ b/file` 文件头，工具会确认文件头与 `path` 指向同一个工作区相对路径。应用前会逐行校验上下文和删除行，文件内容与 patch 不一致时直接失败，避免模型用过期上下文静默改错位置。
 
 ## 边界约束
 

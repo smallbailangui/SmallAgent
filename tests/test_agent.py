@@ -275,6 +275,7 @@ class ArchitectureTests(unittest.TestCase):
 
         self.assertEqual(policy.decide({"type": "tool", "tool": "read_file", "args": {}}).risk, "low")
         self.assertEqual(policy.decide({"type": "tool", "tool": "write_file", "args": {}}).risk, "medium")
+        self.assertEqual(policy.decide({"type": "tool", "tool": "patch_file", "args": {}}).risk, "medium")
         self.assertEqual(policy.decide({"type": "tool", "tool": "run_shell", "args": {}}).risk, "high")
 
     def test_completion_harness_requires_verification_after_modification(self) -> None:
@@ -344,6 +345,25 @@ class ArchitectureTests(unittest.TestCase):
         self.assertIn("criteria_results", report)
         self.assertTrue(all(item["met"] for item in report["criteria_results"]))
         self.assertIn(1, report["criteria_results"][1]["evidence_indices"])
+
+    def test_completion_harness_marks_patch_file_as_mutation(self) -> None:
+        harness = CompletionHarness()
+        harness.start_task("修改 app.py")
+
+        harness.record_tool_call(
+            "patch_file",
+            {"path": "app.py", "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"},
+            {
+                "tool": "patch_file",
+                "ok": True,
+                "output": "applied 1 patch hunk(s) to app.py",
+                "error": "",
+                "metadata": {"path": "app.py", "hunk_count": 1},
+            },
+        )
+
+        self.assertIn("mutation", harness.evidence[0].tags)
+        self.assertEqual(harness.evidence[0].details["path"], "app.py")
 
     def test_completion_harness_detects_workspace_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -512,6 +532,69 @@ class ToolTests(unittest.TestCase):
             self.assertIn("line must be", inserted["error"])
             self.assertFalse(replaced["ok"])
             self.assertIn("start/end", replaced["error"])
+
+    def test_patch_file_applies_single_file_unified_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            target = workspace / "app.py"
+            target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+            patch_text = (
+                "--- a/app.py\n"
+                "+++ b/app.py\n"
+                "@@ -1,3 +1,4 @@\n"
+                " one\n"
+                "-two\n"
+                "+TWO\n"
+                "+inserted\n"
+                " three\n"
+            )
+
+            result = tools.run("patch_file", {"path": "app.py", "patch": patch_text})
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "one\nTWO\ninserted\nthree\n")
+            self.assertEqual(result["metadata"]["path"], "app.py")
+            self.assertEqual(result["metadata"]["hunk_count"], 1)
+            self.assertEqual(result["metadata"]["added_lines"], 2)
+            self.assertEqual(result["metadata"]["removed_lines"], 1)
+
+    def test_patch_file_rejects_mismatched_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            target = workspace / "app.py"
+            target.write_text("one\ntwo\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+            patch_text = (
+                "@@ -1,2 +1,2 @@\n"
+                " one\n"
+                "-missing\n"
+                "+TWO\n"
+            )
+
+            result = tools.run("patch_file", {"path": "app.py", "patch": patch_text})
+
+            self.assertFalse(result["ok"])
+            self.assertIn("patch context mismatch", result["error"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "one\ntwo\n")
+
+    def test_patch_file_rejects_header_for_another_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "app.py").write_text("one\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+            patch_text = (
+                "--- a/other.py\n"
+                "+++ b/other.py\n"
+                "@@ -1,1 +1,1 @@\n"
+                "-one\n"
+                "+two\n"
+            )
+
+            result = tools.run("patch_file", {"path": "app.py", "patch": patch_text})
+
+            self.assertFalse(result["ok"])
+            self.assertIn("does not match target path", result["error"])
 
     def test_git_status_and_diff_are_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -31,6 +31,7 @@ DANGEROUS_COMMAND_MARKERS = (
     "git reset --hard",
     "git clean",
 )
+HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@")
 
 
 def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
@@ -38,6 +39,28 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
+
+
+@dataclass
+class PatchLine:
+    """unified diff 中的一行变更。
+
+    op 保存 diff 前缀：空格表示上下文，- 表示删除，+ 表示新增；text 是去掉前缀后的真实文件行。
+    """
+
+    op: str
+    text: str
+
+
+@dataclass
+class PatchHunk:
+    """unified diff 的一个 hunk，记录原文件起点和内部行操作。"""
+
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    lines: list[PatchLine]
 
 
 @dataclass
@@ -64,6 +87,7 @@ class ToolRegistry:
             "insert_text": self.insert_text,
             "replace_text": self.replace_text,
             "replace_lines": self.replace_lines,
+            "patch_file": self.patch_file,
             "run_shell": self.run_shell,
             "git_status": self.git_status,
             "git_diff": self.git_diff,
@@ -267,6 +291,39 @@ class ToolRegistry:
             metadata,
         )
 
+    def patch_file(self, args: dict[str, Any]) -> ToolResult:
+        """把单文件 unified diff 应用到目标文件。
+
+        这个工具适合较复杂但仍局限在一个文件内的改动：模型可以先 read_file，再生成标准
+        unified diff。解析器会校验 hunk 上下文，避免文件内容已经变化时误改到错误位置。
+        """
+        path = self._resolve_required(args, "path")
+        patch = args.get("patch")
+        if not isinstance(patch, str) or not patch.strip():
+            raise ValueError("patch must be a non-empty string")
+        if not path.is_file():
+            raise ValueError("patch_file only supports existing text files")
+
+        rel_path = self._relative(path)
+        hunks = self._parse_unified_patch(patch, rel_path)
+        original_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        updated_lines, added_lines, removed_lines = self._apply_patch_hunks(original_lines, hunks)
+        path.write_text("".join(updated_lines), encoding="utf-8", newline="\n")
+
+        metadata = {
+            "path": rel_path,
+            "hunk_count": len(hunks),
+            "added_lines": added_lines,
+            "removed_lines": removed_lines,
+        }
+        return self._result(
+            True,
+            "patch_file",
+            f"applied {len(hunks)} patch hunk(s) to {rel_path}",
+            "",
+            metadata,
+        )
+
     def run_shell(self, args: dict[str, Any]) -> ToolResult:
         """执行普通 shell 命令，并返回 stdout/stderr/returncode metadata。"""
         command = args.get("command")
@@ -330,6 +387,124 @@ class ToolRegistry:
             timeout,
             {"recommended_verification": True, **command.to_dict()},
         )
+
+    def _parse_unified_patch(self, patch: str, expected_path: str) -> list[PatchHunk]:
+        """解析单文件 unified diff，并校验可选文件头是否指向目标 path。"""
+        patch_lines = patch.splitlines(keepends=True)
+        hunks: list[PatchHunk] = []
+        index = 0
+
+        while index < len(patch_lines):
+            line = patch_lines[index]
+            if line.startswith(("--- ", "+++ ")):
+                self._validate_patch_header_path(line, expected_path)
+                index += 1
+                continue
+            if not line.startswith("@@ "):
+                index += 1
+                continue
+
+            match = HUNK_HEADER_RE.match(line)
+            if match is None:
+                raise ValueError(f"invalid patch hunk header: {line.rstrip()}")
+            hunk = PatchHunk(
+                old_start=int(match.group("old_start")),
+                old_count=int(match.group("old_count") or "1"),
+                new_start=int(match.group("new_start")),
+                new_count=int(match.group("new_count") or "1"),
+                lines=[],
+            )
+            index += 1
+
+            # hunk 内容只接受 unified diff 的三种前缀；no-newline 标记只描述上一行，不参与应用。
+            while index < len(patch_lines) and not patch_lines[index].startswith("@@ "):
+                hunk_line = patch_lines[index]
+                if hunk_line.startswith("\\ No newline at end of file"):
+                    index += 1
+                    continue
+                if not hunk_line:
+                    raise ValueError("invalid empty patch line")
+                op = hunk_line[0]
+                if op not in {" ", "-", "+"}:
+                    break
+                hunk.lines.append(PatchLine(op, hunk_line[1:]))
+                index += 1
+
+            if not hunk.lines:
+                raise ValueError("patch hunk has no body")
+            self._validate_hunk_counts(hunk)
+            hunks.append(hunk)
+
+        if not hunks:
+            raise ValueError("patch must contain at least one unified diff hunk")
+        return hunks
+
+    def _validate_patch_header_path(self, line: str, expected_path: str) -> None:
+        """校验 diff 文件头，防止模型把另一个文件的 patch 应用到当前 path。"""
+        raw_path = line[4:].strip().split("\t", 1)[0].split(" ", 1)[0]
+        if raw_path == "/dev/null":
+            return
+        normalized = raw_path.replace("\\", "/")
+        if normalized.startswith(("a/", "b/")):
+            normalized = normalized[2:]
+        if normalized != expected_path:
+            raise ValueError(f"patch header path {raw_path!r} does not match target path {expected_path!r}")
+
+    def _validate_hunk_counts(self, hunk: PatchHunk) -> None:
+        """核对 hunk 头部声明的行数，尽早发现模型生成的不完整 patch。"""
+        old_count = sum(1 for line in hunk.lines if line.op in {" ", "-"})
+        new_count = sum(1 for line in hunk.lines if line.op in {" ", "+"})
+        if old_count != hunk.old_count or new_count != hunk.new_count:
+            raise ValueError(
+                "patch hunk line counts do not match header "
+                f"(old {old_count}/{hunk.old_count}, new {new_count}/{hunk.new_count})"
+            )
+
+    def _apply_patch_hunks(self, original_lines: list[str], hunks: list[PatchHunk]) -> tuple[list[str], int, int]:
+        """顺序应用 hunk；上下文或删除行不匹配时直接失败，避免静默错改。"""
+        current_lines = list(original_lines)
+        line_offset = 0
+        added_lines = 0
+        removed_lines = 0
+
+        for hunk in hunks:
+            target_index = hunk.old_start - 1 + line_offset
+            if target_index < 0 or target_index > len(current_lines):
+                raise ValueError(f"patch hunk starts outside file at original line {hunk.old_start}")
+
+            read_index = target_index
+            replacement: list[str] = []
+            for patch_line in hunk.lines:
+                if patch_line.op == "+":
+                    replacement.append(patch_line.text)
+                    added_lines += 1
+                    continue
+
+                if read_index >= len(current_lines):
+                    raise ValueError(f"patch context mismatch near original line {hunk.old_start}")
+                actual = current_lines[read_index]
+                if not self._patch_lines_match(actual, patch_line.text):
+                    raise ValueError(
+                        "patch context mismatch near "
+                        f"line {read_index + 1}: expected {patch_line.text.rstrip()!r}, got {actual.rstrip()!r}"
+                    )
+
+                if patch_line.op == " ":
+                    replacement.append(actual)
+                elif patch_line.op == "-":
+                    removed_lines += 1
+                read_index += 1
+
+            consumed = read_index - target_index
+            current_lines[target_index:read_index] = replacement
+            line_offset += len(replacement) - consumed
+
+        return current_lines, added_lines, removed_lines
+
+    @staticmethod
+    def _patch_lines_match(actual: str, expected: str) -> bool:
+        """比较 patch 行和文件行；兼容 CRLF/LF 差异，但不放宽实际文本内容。"""
+        return actual == expected or actual.rstrip("\r\n") == expected.rstrip("\r\n")
 
     def _run_command(
         self,

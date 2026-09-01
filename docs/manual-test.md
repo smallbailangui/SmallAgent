@@ -104,6 +104,7 @@ python -m smallagent --workspace tmp/manual-agent --interactive --history-file t
 - agent 可使用 `create_directory`、`write_file` 或 `append_text` 完成任务。
 - report 中应出现目录或文件变化。
 - 如果要求插入或替换某几行，agent 应优先使用 `insert_text` 或 `replace_lines`，而不是重写整个文件。
+- 如果要求一次修改同一文件内多处相关内容，agent 可使用 `patch_file` 应用单文件 unified diff，并在失败后重新读取文件再生成 patch。
 
 ## 测试 5：推荐验证命令
 
