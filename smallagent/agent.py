@@ -97,11 +97,14 @@ class CodingAgent:
         self.decision_policy = decision_policy or DecisionPolicy()
         self.completion_harness = completion_harness or CompletionHarness()
 
-    def run(self, task: str) -> AgentResult:
+    def run(self, task: str, session_context: str = "") -> AgentResult:
         """执行一个用户任务。
 
         主循环的职责是把“模型文本”变成“可执行动作”，再把工具结果变回模型可读的
         OBSERVATION。模型决定下一步，程序负责执行、记录和验收。
+
+        session_context 来自交互式终端的会话摘要；单次任务模式默认不传。
+        它只作为额外上下文提示模型，不参与 completion harness 的确定性验收。
         """
         # 完成度 harness 在任务开始时生成验收标准，并拍一份工作区初始快照。
         self.completion_harness.start_task(task, self.tools.workspace)
@@ -111,8 +114,11 @@ class CodingAgent:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": self._state_prompt(perception, plan)},
-            {"role": "user", "content": task},
         ]
+        if session_context.strip():
+            # 交互式终端里的上一轮任务摘要放在用户任务前，帮助模型理解“继续/它”等指代。
+            messages.append({"role": "user", "content": session_context})
+        messages.append({"role": "user", "content": task})
 
         for step in range(1, self.config.max_steps + 1):
             perception.observe_step(step)
