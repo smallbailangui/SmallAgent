@@ -17,6 +17,7 @@ from smallagent.decision import DecisionPolicy
 from smallagent.memory import ShortTermMemory
 from smallagent.perception import Perception
 from smallagent.planning import Planner
+from smallagent.terminal import TerminalSession
 from smallagent.tools import ToolRegistry
 
 
@@ -454,6 +455,83 @@ class CliTests(unittest.TestCase):
             self.assertTrue(report["completion_check"]["criteria_results"])
             self.assertEqual(report["completion_check"]["evidence"][0]["tool"], "write_file")
             self.assertEqual(report["completion_check"]["changed_files"][0]["path"], "note.txt")
+
+    def test_cli_interactive_mode_runs_terminal_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"已查看目录"}',
+                ]
+            )
+            inputs = iter(["查看目录", "/history", "/exit"])
+            output = io.StringIO()
+
+            with (
+                patch("smallagent.cli.OpenAICompatibleClient.from_env", return_value=client),
+                patch("builtins.input", side_effect=lambda prompt: next(inputs)),
+                redirect_stdout(output),
+            ):
+                exit_code = main(["--workspace", tmp, "--interactive"])
+
+            rendered = output.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("SmallAgent 交互模式", rendered)
+            self.assertIn("已查看目录", rendered)
+            self.assertIn("任务历史", rendered)
+
+
+class TerminalSessionTests(unittest.TestCase):
+    def test_terminal_session_handles_builtin_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            inputs = iter(["/status", "/history", "/clear", "/unknown", "/exit"])
+            session = TerminalSession(
+                client=FakeClient([]),
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=2),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+            )
+
+            exit_code = session.run_forever()
+            rendered = output.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("工作区", rendered)
+            self.assertIn("暂无任务历史", rendered)
+            self.assertIn("已清空当前终端会话摘要", rendered)
+            self.assertIn("未知命令", rendered)
+
+    def test_terminal_session_runs_multiple_tasks_and_keeps_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"第一个任务完成"}',
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"第二个任务完成"}',
+                ]
+            )
+            inputs = iter(["查看目录", "再查看一次目录", "/history", "/exit"])
+            session = TerminalSession(
+                client=client,
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=3),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+            )
+
+            session.run_forever()
+            rendered = output.getvalue()
+
+            self.assertEqual(len(session.summaries), 2)
+            self.assertIn("第一个任务完成", rendered)
+            self.assertIn("第二个任务完成", rendered)
+            self.assertIn("1. [通过] 查看目录", rendered)
+            self.assertIn("2. [通过] 再查看一次目录", rendered)
 
 
 if __name__ == "__main__":
