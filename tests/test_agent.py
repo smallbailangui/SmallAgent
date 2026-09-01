@@ -759,6 +759,43 @@ class TerminalSessionTests(unittest.TestCase):
             self.assertEqual(report[1]["task"], "再查看一次目录")
             self.assertIn("SESSION_CONTEXT", client.messages_seen[2][-2]["content"])
 
+    def test_terminal_session_loads_existing_report_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            report_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "task_index": 1,
+                            "task": "之前的任务",
+                            "final_message": "之前已经完成",
+                            "steps": 2,
+                            "accepted": True,
+                            "completion_check": {"accepted": True},
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            inputs = iter(["/history", "/exit"])
+            session = TerminalSession(
+                client=FakeClient([]),
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=3),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+                report_file=report_path,
+            )
+
+            session.run_forever()
+            rendered = output.getvalue()
+
+            self.assertEqual(len(session.summaries), 1)
+            self.assertIn("已恢复历史任务摘要：1 条", rendered)
+            self.assertIn("之前的任务", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
