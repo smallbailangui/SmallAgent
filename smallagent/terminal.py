@@ -63,6 +63,7 @@ class TerminalSession:
 
     def run_forever(self) -> int:
         """进入 REPL 循环，直到用户输入 /exit 或 /quit。"""
+        self.load_existing_summaries()
         self._print("SmallAgent 交互模式，输入 /help 查看命令，输入 /exit 退出。")
         while True:
             try:
@@ -83,6 +84,30 @@ class TerminalSession:
                 self._run_task(task)
             except Exception as exc:  # noqa: BLE001 - 交互终端要隔离单个任务失败，不能直接退出
                 self._record_task_failure(task, exc)
+
+    def load_existing_summaries(self) -> None:
+        """从已有 report/history 文件恢复历史摘要。
+
+        优先读取 report_file，因为它本来就包含任务、final、轮数和验收状态；
+        如果没有 report_file，再尝试从 history_file 里的摘要字段恢复。
+        """
+        if self.summaries:
+            return
+        source = self.report_file if self.report_file and self.report_file.exists() else self.history_file
+        if source is None or not source.exists():
+            return
+        try:
+            records = self._read_json_records(source)
+        except ValueError as exc:
+            self._print(f"历史摘要加载失败：{exc}")
+            return
+
+        for record in records:
+            summary = self._summary_from_record(record)
+            if summary is not None:
+                self.summaries.append(summary)
+        if self.summaries:
+            self._print(f"已恢复历史任务摘要：{len(self.summaries)} 条。")
 
     def _handle_command(self, command: str) -> bool:
         """处理斜杠命令。
@@ -279,14 +304,37 @@ class TerminalSession:
         文件不存在时创建新数组；文件存在但为空时也按空数组处理。
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.read_text(encoding="utf-8").strip():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                raise ValueError(f"{path} must contain a JSON array")
-        else:
-            data = []
+        data = self._read_json_records(path) if path.exists() else []
         data.append(record)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+
+    def _read_json_records(self, path: Path) -> list[dict[str, object]]:
+        """读取交互式记录文件，确保内容是 JSON 对象数组。"""
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return []
+        data = json.loads(text)
+        if not isinstance(data, list):
+            raise ValueError(f"{path} must contain a JSON array")
+        records: list[dict[str, object]] = []
+        for item in data:
+            if isinstance(item, dict):
+                records.append(item)
+        return records
+
+    def _summary_from_record(self, record: dict[str, object]) -> TaskSummary | None:
+        """从持久化记录中恢复 /history 需要的轻量摘要。"""
+        task = record.get("task")
+        final_message = record.get("final_message")
+        steps = record.get("steps", 0)
+        accepted = record.get("accepted")
+        if not isinstance(task, str) or not isinstance(final_message, str):
+            return None
+        if not isinstance(steps, int):
+            steps = 0
+        if not isinstance(accepted, bool):
+            accepted = None
+        return TaskSummary(task=task, final_message=final_message, steps=steps, accepted=accepted)
 
 
 def create_terminal_session(
