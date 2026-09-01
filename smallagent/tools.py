@@ -58,8 +58,12 @@ class ToolRegistry:
             "read_file": self.read_file,
             "file_info": self.file_info,
             "search_text": self.search_text,
+            "create_directory": self.create_directory,
             "write_file": self.write_file,
+            "append_text": self.append_text,
+            "insert_text": self.insert_text,
             "replace_text": self.replace_text,
+            "replace_lines": self.replace_lines,
             "run_shell": self.run_shell,
             "git_status": self.git_status,
             "git_diff": self.git_diff,
@@ -176,7 +180,49 @@ class ToolRegistry:
             raise ValueError("content must be a string")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", newline="\n")
-        return self._result(True, "write_file", f"wrote {path.relative_to(self.workspace)}", "")
+        return self._result(True, "write_file", f"wrote {self._relative(path)}", "")
+
+    def create_directory(self, args: dict[str, Any]) -> ToolResult:
+        """创建目录，适合先搭好文件结构再写入文件。"""
+        path = self._resolve_required(args, "path")
+        path.mkdir(parents=True, exist_ok=bool(args.get("exist_ok", True)))
+        metadata = {"path": self._relative(path), "type": "directory"}
+        return self._result(True, "create_directory", f"created directory {metadata['path']}", "", metadata)
+
+    def append_text(self, args: dict[str, Any]) -> ToolResult:
+        """向文件末尾追加文本，避免为了加一小段内容重写整个文件。"""
+        path = self._resolve_required(args, "path")
+        content = args.get("content")
+        if not isinstance(content, str):
+            raise ValueError("content must be a string")
+        create = bool(args.get("create", True))
+        if not path.exists() and not create:
+            raise ValueError("file does not exist and create is false")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        metadata = {"path": self._relative(path), "bytes_appended": len(content.encode("utf-8"))}
+        return self._result(True, "append_text", f"appended to {metadata['path']}", "", metadata)
+
+    def insert_text(self, args: dict[str, Any]) -> ToolResult:
+        """在指定行号前插入文本。
+
+        line 是 1-based 行号；line=1 表示插到文件开头，line=总行数+1 表示追加到末尾。
+        """
+        path = self._resolve_required(args, "path")
+        content = args.get("content")
+        if not isinstance(content, str):
+            raise ValueError("content must be a string")
+        line = int(args.get("line", 1))
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        if line < 1 or line > len(lines) + 1:
+            raise ValueError("line must be between 1 and the number of lines plus 1")
+        index = line - 1
+        lines[index:index] = [content]
+        path.write_text("".join(lines), encoding="utf-8", newline="\n")
+        metadata = {"path": self._relative(path), "line": line}
+        return self._result(True, "insert_text", f"inserted text into {metadata['path']} at line {line}", "", metadata)
 
     def replace_text(self, args: dict[str, Any]) -> ToolResult:
         """在单个文件中执行精确文本替换。"""
@@ -194,6 +240,32 @@ class ToolRegistry:
         path.write_text(updated, encoding="utf-8", newline="\n")
         changed = text.count(old) if count < 0 else min(text.count(old), count)
         return self._result(True, "replace_text", f"replaced {changed} occurrence(s)", "")
+
+    def replace_lines(self, args: dict[str, Any]) -> ToolResult:
+        """替换闭区间行号内的内容，适合精确修改函数或配置片段。
+
+        start/end 都是 1-based，且 end 包含在替换范围内。content 会作为整个区间的新内容。
+        """
+        path = self._resolve_required(args, "path")
+        content = args.get("content")
+        if not isinstance(content, str):
+            raise ValueError("content must be a string")
+        start = int(args.get("start", 1))
+        end = int(args.get("end", start))
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        if start < 1 or end < start or end > len(lines):
+            raise ValueError("start/end must select an existing inclusive line range")
+        lines[start - 1 : end] = [content]
+        path.write_text("".join(lines), encoding="utf-8", newline="\n")
+        metadata = {"path": self._relative(path), "start": start, "end": end}
+        return self._result(
+            True,
+            "replace_lines",
+            f"replaced lines {start}-{end} in {metadata['path']}",
+            "",
+            metadata,
+        )
 
     def run_shell(self, args: dict[str, Any]) -> ToolResult:
         """执行普通 shell 命令，并返回 stdout/stderr/returncode metadata。"""

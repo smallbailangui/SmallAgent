@@ -360,6 +360,29 @@ class ArchitectureTests(unittest.TestCase):
             self.assertEqual(changes["app.py"], "modified")
             self.assertEqual(changes["created.py"], "added")
 
+    def test_completion_harness_detects_directory_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            harness = CompletionHarness()
+            harness.start_task("创建 docs 目录", workspace)
+
+            (workspace / "docs").mkdir()
+            harness.record_tool_call(
+                "create_directory",
+                {"path": "docs"},
+                {"tool": "create_directory", "ok": True, "output": "created directory docs", "error": ""},
+            )
+            harness.record_tool_call(
+                "list_files",
+                {"path": "."},
+                {"tool": "list_files", "ok": True, "output": "docs/", "error": ""},
+            )
+            changes = {item.path: item.status for item in harness.changed_files()}
+            check = harness.evaluate("已创建 docs 目录")
+
+            self.assertEqual(changes["docs/"], "added")
+            self.assertTrue(check.accepted)
+
     def test_completion_harness_requires_recommended_verification_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -435,6 +458,60 @@ class ToolTests(unittest.TestCase):
             self.assertTrue(result["metadata"]["exists"])
             self.assertEqual(result["metadata"]["type"], "file")
             self.assertEqual(result["metadata"]["size_bytes"], 5)
+
+    def test_create_directory_and_append_text_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            tools = ToolRegistry(workspace)
+
+            created = tools.run("create_directory", {"path": "notes"})
+            appended = tools.run(
+                "append_text",
+                {"path": "notes/log.txt", "content": "first\n", "create": True},
+            )
+            appended_again = tools.run(
+                "append_text",
+                {"path": "notes/log.txt", "content": "second\n", "create": False},
+            )
+
+            self.assertTrue(created["ok"])
+            self.assertEqual(created["metadata"]["path"], "notes")
+            self.assertTrue(appended["ok"])
+            self.assertTrue(appended_again["ok"])
+            self.assertEqual((workspace / "notes" / "log.txt").read_text(encoding="utf-8"), "first\nsecond\n")
+
+    def test_insert_text_and_replace_lines_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            target = workspace / "app.py"
+            target.write_text("one\nthree\nfour\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+
+            inserted = tools.run("insert_text", {"path": "app.py", "line": 2, "content": "two\n"})
+            replaced = tools.run(
+                "replace_lines",
+                {"path": "app.py", "start": 3, "end": 4, "content": "THREE\nFOUR\n"},
+            )
+
+            self.assertTrue(inserted["ok"])
+            self.assertEqual(inserted["metadata"]["line"], 2)
+            self.assertTrue(replaced["ok"])
+            self.assertEqual(replaced["metadata"]["start"], 3)
+            self.assertEqual(target.read_text(encoding="utf-8"), "one\ntwo\nTHREE\nFOUR\n")
+
+    def test_line_edit_tools_validate_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "app.py").write_text("one\n", encoding="utf-8")
+            tools = ToolRegistry(workspace)
+
+            inserted = tools.run("insert_text", {"path": "app.py", "line": 3, "content": "bad\n"})
+            replaced = tools.run("replace_lines", {"path": "app.py", "start": 2, "end": 2, "content": "bad\n"})
+
+            self.assertFalse(inserted["ok"])
+            self.assertIn("line must be", inserted["error"])
+            self.assertFalse(replaced["ok"])
+            self.assertIn("start/end", replaced["error"])
 
     def test_git_status_and_diff_are_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

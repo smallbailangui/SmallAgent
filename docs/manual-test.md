@@ -91,6 +91,20 @@ python -m smallagent --workspace tmp/manual-agent --interactive --history-file t
 - `tmp/manual-agent/note.txt` 应存在，内容正确。
 - report 中应出现 `mutation`、`verification` 和 `changed_files`。
 
+## 测试 4.1：细粒度编辑
+
+继续在临时工作区输入：
+
+```text
+创建 notes 目录，在 notes/log.txt 中写入第一行，再追加第二行，然后读回确认
+```
+
+预期：
+
+- agent 可使用 `create_directory`、`write_file` 或 `append_text` 完成任务。
+- report 中应出现目录或文件变化。
+- 如果要求插入或替换某几行，agent 应优先使用 `insert_text` 或 `replace_lines`，而不是重写整个文件。
+
 ## 测试 5：推荐验证命令
 
 在项目根目录交互模式中输入：

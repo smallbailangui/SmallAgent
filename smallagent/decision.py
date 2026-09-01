@@ -49,7 +49,7 @@ class DecisionPolicy:
             "discover_verification",
         }:
             return "low"
-        if tool in {"write_file", "replace_text"}:
+        if tool in {"create_directory", "write_file", "append_text", "insert_text", "replace_text", "replace_lines"}:
             return "medium"
         if tool in {"run_shell", "run_recommended_verification"}:
             return "high"

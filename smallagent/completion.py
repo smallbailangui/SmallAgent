@@ -12,7 +12,7 @@ from .verification import VerificationCommand, discover_verification_commands, n
 
 # 这三组工具分类是 harness 的证据标签来源。
 # 一个工具可以属于多个类别，例如 run_shell 既能提供上下文，也能提供验证证据。
-MODIFYING_TOOLS = {"write_file", "replace_text"}
+MODIFYING_TOOLS = {"create_directory", "write_file", "append_text", "insert_text", "replace_text", "replace_lines"}
 VERIFICATION_TOOLS = {"read_file", "list_files", "run_shell", "run_recommended_verification"}
 CONTEXT_TOOLS = {
     "get_cwd",
@@ -379,8 +379,24 @@ class CompletionHarness:
     ) -> dict[str, Any]:
         """提取 report 中需要稳定保留的调用细节。"""
         details: dict[str, Any] = {}
-        if tool in {"read_file", "write_file", "replace_text", "file_info"} and isinstance(args.get("path"), str):
+        if tool in {
+            "read_file",
+            "create_directory",
+            "write_file",
+            "append_text",
+            "insert_text",
+            "replace_text",
+            "replace_lines",
+            "file_info",
+        } and isinstance(args.get("path"), str):
             details["path"] = args["path"]
+        if tool in {"insert_text"} and isinstance(args.get("line"), int):
+            details["line"] = args["line"]
+        if tool in {"replace_lines"}:
+            if isinstance(args.get("start"), int):
+                details["start"] = args["start"]
+            if isinstance(args.get("end"), int):
+                details["end"] = args["end"]
         if tool in {"list_files", "git_diff"} and isinstance(args.get("path", "."), str):
             details["path"] = args.get("path", ".")
         if tool == "search_text" and isinstance(args.get("query"), str):
@@ -478,10 +494,13 @@ class CompletionHarness:
             return {}
         snapshot: dict[str, str] = {}
         for path in sorted(workspace.rglob("*")):
-            if not path.is_file():
-                continue
             rel = path.relative_to(workspace)
             if any(part in SNAPSHOT_IGNORED_DIRS for part in rel.parts):
+                continue
+            if path.is_dir():
+                snapshot[str(rel).replace("\\", "/") + "/"] = "dir"
+                continue
+            if not path.is_file():
                 continue
             if path.stat().st_size > SNAPSHOT_MAX_BYTES:
                 digest = f"large:{path.stat().st_size}"
