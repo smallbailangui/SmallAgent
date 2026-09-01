@@ -12,6 +12,7 @@ import http.client
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -26,6 +27,7 @@ class OpenAICompatibleClient:
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.2
     timeout: int = 90
+    max_retries: int = 1
 
     @classmethod
     def from_env(cls) -> "OpenAICompatibleClient":
@@ -42,6 +44,7 @@ class OpenAICompatibleClient:
             model=os.getenv("SMALLAGENT_MODEL", "gpt-4o-mini"),
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
             temperature=float(os.getenv("SMALLAGENT_TEMPERATURE", "0.2")),
+            max_retries=int(os.getenv("SMALLAGENT_MODEL_RETRIES", "1")),
         )
 
     def complete(self, messages: list[dict[str, str]]) -> str:
@@ -55,6 +58,43 @@ class OpenAICompatibleClient:
             "messages": messages,
             "temperature": self.temperature,
         }
+        last_retryable_error: RuntimeError | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                payload = self._post_chat_completions(body)
+                # Chat Completions 的标准返回位置：choices[0].message.content。
+                content = payload["choices"][0]["message"]["content"]
+            except http.client.IncompleteRead as exc:
+                # 兼容服务偶尔会在 chunked 响应中途断开；这类网络抖动允许重试。
+                last_retryable_error = RuntimeError(
+                    "model API response ended before it was fully read; please retry the task"
+                )
+                if attempt < self.max_retries:
+                    continue
+                raise last_retryable_error from exc
+            except urllib.error.HTTPError as exc:
+                # 把服务端返回的错误正文带出来，用户能直接看到 401/模型名错误等原因。
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"model API request failed: HTTP {exc.code}: {detail}") from exc
+            except urllib.error.URLError as exc:
+                raise RuntimeError(f"model API request failed: {exc.reason}") from exc
+            except (KeyError, IndexError, TypeError) as exc:
+                raise RuntimeError(f"unexpected model API response: {payload!r}") from exc
+
+            if isinstance(content, str) and content.strip():
+                return content
+
+            # 有些兼容服务偶发返回空 message.content；重试一次通常比直接中断体验更好。
+            last_retryable_error = RuntimeError("model returned empty content; please retry the task")
+            if attempt < self.max_retries:
+                continue
+            raise last_retryable_error
+
+        # 循环理论上一定会 return 或 raise；保留兜底让类型检查和阅读都更明确。
+        raise last_retryable_error or RuntimeError("model request failed")
+
+    def _post_chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
+        """发送 HTTP 请求并解析 JSON 响应。"""
         # OpenAI 兼容接口约定：POST {base_url}/chat/completions。
         request = urllib.request.Request(
             url=f"{self.base_url}/chat/completions",
@@ -65,27 +105,8 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except http.client.IncompleteRead as exc:
-            # 兼容服务偶尔会在 chunked 响应中途断开；这里转成清晰错误，交互终端可继续运行。
-            raise RuntimeError(
-                "model API response ended before it was fully read; please retry the task"
-            ) from exc
-        except urllib.error.HTTPError as exc:
-            # 把服务端返回的错误正文带出来，用户能直接看到 401/模型名错误等原因。
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"model API request failed: HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"model API request failed: {exc.reason}") from exc
-
-        try:
-            # Chat Completions 的标准返回位置：choices[0].message.content。
-            content = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(f"unexpected model API response: {payload!r}") from exc
-
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("model returned empty content")
-        return content
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"unexpected model API response: {payload!r}")
+        return payload
