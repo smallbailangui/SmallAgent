@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import http.client
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from smallagent.completion import CompletionHarness
 from smallagent.config import load_dotenv
 from smallagent.decision import DecisionPolicy
 from smallagent.memory import ShortTermMemory
+from smallagent.model import OpenAICompatibleClient
 from smallagent.perception import Perception
 from smallagent.planning import Planner
 from smallagent.terminal import TerminalSession
@@ -32,6 +34,27 @@ class FakeClient:
         response = self.responses[self.calls]
         self.calls += 1
         return response
+
+
+class FailingClient:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.model = "failing-model"
+        self.base_url = "https://example.invalid/v1"
+
+    def complete(self, messages: list[dict[str, str]]) -> str:
+        raise self.error
+
+
+class IncompleteReadResponse:
+    def __enter__(self) -> "IncompleteReadResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(b"", 10)
 
 
 class AgentTests(unittest.TestCase):
@@ -438,6 +461,15 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(__import__("os").environ["SMALLAGENT_MODEL"], "demo-model")
 
 
+class ModelClientTests(unittest.TestCase):
+    def test_model_client_wraps_incomplete_read(self) -> None:
+        client = OpenAICompatibleClient(api_key="test-key", model="test-model")
+
+        with patch("urllib.request.urlopen", return_value=IncompleteReadResponse()):
+            with self.assertRaisesRegex(RuntimeError, "response ended before"):
+                client.complete([{"role": "user", "content": "hello"}])
+
+
 class CliTests(unittest.TestCase):
     def test_cli_writes_completion_report_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -540,6 +572,31 @@ class TerminalSessionTests(unittest.TestCase):
             self.assertIn("暂无任务历史", rendered)
             self.assertIn("已清空当前终端会话摘要", rendered)
             self.assertIn("未知命令", rendered)
+
+    def test_terminal_session_keeps_running_after_task_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            output = io.StringIO()
+            inputs = iter(["会触发模型错误", "/history", "/exit"])
+            session = TerminalSession(
+                client=FailingClient(RuntimeError("temporary model failure")),
+                tools=ToolRegistry(Path(tmp)),
+                config=AgentConfig(max_steps=2),
+                input_func=lambda prompt: next(inputs),
+                output=output,
+                report_file=report_path,
+            )
+
+            exit_code = session.run_forever()
+            rendered = output.getvalue()
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("任务失败", rendered)
+            self.assertIn("交互模式仍在运行", rendered)
+            self.assertIn("任务历史", rendered)
+            self.assertFalse(session.summaries[0].accepted)
+            self.assertEqual(report[0]["error"], "RuntimeError: temporary model failure")
 
     def test_terminal_session_runs_multiple_tasks_and_keeps_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
