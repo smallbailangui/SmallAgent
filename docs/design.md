@@ -6,15 +6,31 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 
 1. `smallagent.cli` 解析任务、工作目录和最大循环轮数。
 2. `smallagent.config` 从 `.env` 读取本地配置，系统环境变量优先。
-3. `smallagent.perception` 形成感知状态，包括任务、工作区、轮数和最近工具结果。
-4. `smallagent.planning` 维护当前计划，记录任务推进过程。
-5. `smallagent.memory` 保存短期记忆，让后续轮次能看到关键事实。
-6. `smallagent.model` 调用 OpenAI 兼容的聊天补全接口。
-7. `smallagent.agent` 解析模型返回的 JSON 动作。
-8. `smallagent.decision` 校验动作是否允许执行。
-9. 如果动作是工具调用，`smallagent.tools` 在本地执行并把观察结果交还给模型。
-10. 如果动作是最终回答，`smallagent.completion` 先根据任务验收标准和工具轨迹执行完成度检查。
-11. 完成度检查通过，或达到步数上限，循环停止；未通过时把 `SELF_CHECK` 反馈给模型继续补证据。
+3. 如果使用 `--interactive`，`smallagent.terminal` 进入持续输入循环，普通输入会被当作一条新任务执行，斜杠命令由终端层直接处理。
+4. `smallagent.perception` 形成感知状态，包括任务、工作区、轮数和最近工具结果。
+5. `smallagent.planning` 维护当前计划，记录任务推进过程。
+6. `smallagent.memory` 保存短期记忆，让后续轮次能看到关键事实。
+7. `smallagent.model` 调用 OpenAI 兼容的聊天补全接口。
+8. `smallagent.agent` 解析模型返回的 JSON 动作。
+9. `smallagent.decision` 校验动作是否允许执行。
+10. 如果动作是工具调用，`smallagent.tools` 在本地执行并把观察结果交还给模型。
+11. 如果动作是最终回答，`smallagent.completion` 先根据任务验收标准和工具轨迹执行完成度检查。
+12. 完成度检查通过，或达到步数上限，循环停止；未通过时把 `SELF_CHECK` 反馈给模型继续补证据。
+
+## 交互式终端
+
+`smallagent.terminal` 是单次任务 agent 外面的一层 REPL 外壳。它的职责是管理终端输入输出和本次会话摘要，不直接做模型推理，也不直接执行文件工具。
+
+当前交互模式支持：
+
+- 普通文本：作为一条新任务交给 `CodingAgent.run()`。
+- `/help`：显示内置命令。
+- `/status`：显示工作区、最大轮数和本次会话已完成任务数。
+- `/history`：显示本次终端会话内的任务摘要和 final 结果预览。
+- `/clear`：清空本次终端会话摘要。
+- `/exit` 或 `/quit`：退出交互模式。
+
+这个设计先实现“持续输入多个任务”，但每条任务内部仍然是独立的 `CodingAgent` 运行。这样可以先获得终端 agent 的使用形态，同时避免过早把单任务 memory、completion harness 和会话级长期记忆混在一起。后续如果要让 agent 真正跨任务继承上下文，可以在 `TerminalSession` 中保留更丰富的 session memory，并在创建 `CodingAgent` 时注入到 prompt 或 memory 模块。
 
 ## 可扩展位置
 
@@ -26,6 +42,7 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 - 扩展规划：替换 `Planner`，加入任务分解、检查点和回滚策略。
 - 扩展决策：`DecisionPolicy` 已输出基础风险等级，后续可加入人工确认和工具白名单。
 - 扩展完成度检查：`CompletionHarness` 已在 final 前检查空回答、未处理失败、修改后验证证据和任务验收标准；后续可接入测试发现、静态分析和更细粒度的完成判据。
+- 扩展交互终端：`TerminalSession` 已支持连续任务和内置命令；后续可加入任务中断、继续执行、人工确认、会话级记忆和历史持久化。
 
 ## 完成度检查
 
