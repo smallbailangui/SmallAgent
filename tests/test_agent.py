@@ -135,6 +135,51 @@ class AgentTests(unittest.TestCase):
             self.assertIn("验收标准", joined_history)
             self.assertEqual(len(memory.items), 1)
 
+    def test_agent_clears_task_memory_between_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient(
+                [
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"第一轮完成"}',
+                    '{"type":"tool","tool":"get_cwd","args":{}}',
+                    '{"type":"final","message":"第二轮完成"}',
+                ]
+            )
+            memory = ShortTermMemory()
+            agent = CodingAgent(client, ToolRegistry(Path(tmp)), AgentConfig(max_steps=3), memory=memory)
+
+            agent.run("第一轮任务")
+            memory.remember("note", "上一任务不应泄漏")
+            agent.run("第二轮任务")
+
+            rendered = memory.to_prompt()
+            self.assertEqual(len(memory.items), 1)
+            self.assertNotIn("上一任务不应泄漏", rendered)
+
+    def test_memory_records_decision_facts_instead_of_raw_output_only(self) -> None:
+        memory = ShortTermMemory()
+
+        memory.remember_tool_result(
+            {
+                "tool": "run_shell",
+                "ok": True,
+                "output": "Ran 48 tests in 0.8s\nOK",
+                "error": "",
+                "metadata": {"command": "python -m unittest discover -s tests -v", "returncode": 0},
+            },
+            {},
+        )
+        memory.remember_tool_result(
+            {"tool": "write_file", "ok": True, "output": "wrote README.txt", "error": ""},
+            {"path": "README.txt"},
+        )
+
+        rendered = memory.to_prompt()
+
+        self.assertIn("python -m unittest discover -s tests -v", rendered)
+        self.assertIn("README.txt", rendered)
+        self.assertIn("已对 README.txt 执行 write_file", rendered)
+
     def test_agent_accepts_session_context_before_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = FakeClient(

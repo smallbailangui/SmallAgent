@@ -9,7 +9,7 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 3. 如果使用 `--interactive`，`smallagent.terminal` 进入持续输入循环，普通输入会被当作一条新任务执行，斜杠命令由终端层直接处理。
 4. `smallagent.perception` 形成感知状态，包括任务、工作区、轮数和最近工具结果。
 5. `smallagent.planning` 维护当前计划，记录任务推进过程。
-6. `smallagent.memory` 保存短期记忆，让后续轮次能看到关键事实。
+6. `smallagent.memory` 保存任务内 working memory，把工具结果压缩成关键事实，让后续轮次不用只依赖完整历史。
 7. `smallagent.model` 调用 OpenAI 兼容的聊天补全接口。
 8. `smallagent.agent` 解析模型返回的 JSON 动作。
 9. `smallagent.decision` 校验动作是否允许执行。
@@ -66,7 +66,7 @@ flowchart TD
 - 替换模型：实现 `ChatClient` 协议即可。
 - 调整行为：修改 `smallagent.prompts.SYSTEM_PROMPT`。
 - 加强安全策略：扩展 `ToolRegistry._check_command`。
-- 扩展记忆：替换 `ShortTermMemory` 为文件存储、数据库或向量检索。
+- 扩展记忆：当前 `ShortTermMemory` 是任务内 working memory，会在每次任务开始清空，只保存最近工具事实摘要；后续可替换为文件存储、数据库或向量检索，形成跨任务长期记忆。
 - 扩展规划：替换 `Planner`，加入任务分解、检查点和回滚策略。
 - 扩展决策：`DecisionPolicy` 已输出基础风险等级，交互终端已对 high 风险工具加入人工确认；后续可加入更细的工具白名单和按项目配置的权限策略。
 - 扩展完成度检查：`CompletionHarness` 已在 final 前检查空回答、未处理失败、修改后验证证据和任务验收标准；后续可接入测试发现、静态分析和更细粒度的完成判据。

@@ -116,6 +116,8 @@ class CodingAgent:
         """
         # 完成度 harness 在任务开始时生成验收标准，并拍一份工作区初始快照。
         self.completion_harness.start_task(task, self.tools.workspace)
+        # Memory 是任务内 working memory；复用同一个 CodingAgent 实例时不能带入上一任务。
+        self.memory.clear()
         # perception/plan/memory/completion 会被合并进状态提示，帮助模型知道当前进度。
         perception = Perception(task, self.tools.workspace)
         plan = self.planner.create_initial_plan(task)
@@ -255,7 +257,7 @@ class CodingAgent:
             # 更新当前观察状态
             perception.observe_tool_result(result)
             # 保存短期运行记忆
-            self.memory.remember_tool_result(result)
+            self.memory.remember_tool_result(result, args if isinstance(args, dict) else {})
             # 保存验收证据
             self.completion_harness.record_tool_call(tool_name, args if isinstance(args, dict) else {}, result)
             plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
@@ -378,7 +380,7 @@ class CodingAgent:
         )
         result = self.tools.run("run_recommended_verification", args)
         perception.observe_tool_result(result)
-        self.memory.remember_tool_result(result)
+        self.memory.remember_tool_result(result, args)
         self.completion_harness.record_tool_call("run_recommended_verification", args, result)
         plan = self.planner.update_after_tool(plan, result["tool"], result["ok"])
         self._emit_trace(
