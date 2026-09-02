@@ -1,0 +1,43 @@
+\documentclass[tikz,border=6pt]{standalone}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+
+\begin{document}
+\begin{tikzpicture}[
+  node distance=7mm,
+  box/.style={draw, rounded corners, align=center, minimum width=42mm, minimum height=8mm, font=\small},
+  diamond/.style={draw, diamond, aspect=2.2, align=center, inner sep=1.5pt, font=\small},
+  state/.style={box, fill=green!8},
+  action/.style={diamond, fill=orange!10},
+  tool/.style={box, fill=blue!7},
+  done/.style={box, fill=purple!8},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+
+\node[tool] (user) {User Task\\CLI / Interactive};
+\node[tool, below=of user] (agent) {Agent Loop\\CodingAgent.run};
+\node[state, below=of agent] (state) {State Summary\\Perception / Planning\\Memory / Criteria};
+\node[tool, below=of state] (model) {Model Call\\Chat Completions};
+\node[action, below=of model] (decision) {JSON Action\\Decision Policy};
+\node[action, below left=10mm and 9mm of decision] (risk) {High-risk\\command?};
+\node[tool, below=of risk] (tools) {Local Tools\\Files / Shell / Git};
+\node[state, below=of tools] (obs) {Observation\\Result + Evidence};
+\node[done, below right=10mm and 9mm of decision] (check) {Completion Check\\accept final?};
+\node[done, below=of check] (summary) {Final Summary\\changes + verification};
+\node[tool, left=of risk] (approval) {Human Approval};
+
+\draw[arrow] (user) -- (agent);
+\draw[arrow] (agent) -- (state);
+\draw[arrow] (state) -- (model);
+\draw[arrow] (model) -- (decision);
+\draw[arrow] (decision) -- node[above, sloped] {tool} (risk);
+\draw[arrow] (risk) -- node[right] {no} (tools);
+\draw[arrow] (risk) -- node[above] {yes} (approval);
+\draw[arrow] (approval) |- (tools);
+\draw[arrow] (tools) -- (obs);
+\draw[arrow] (obs.west) .. controls +(-25mm,0) and +(-25mm,0) .. (state.west);
+\draw[arrow] (decision) -- node[above, sloped] {final} (check);
+\draw[arrow] (check) -- node[right] {pass} (summary);
+\draw[arrow] (check.east) .. controls +(22mm,0) and +(22mm,0) .. node[right] {need evidence} (state.east);
+
+\end{tikzpicture}
+\end{document}

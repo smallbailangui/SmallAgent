@@ -2,35 +2,26 @@ SmallAgent
 
 Git 仓库地址：https://github.com/smallbailangui/SmallAgent
 
-运行方式：
+如何运行：
 1. 安装 Python 3.10+。
-2. 参考 .env.example 设置环境变量 OPENAI_API_KEY；程序会自动读取当前目录的 .env，可选设置 SMALLAGENT_MODEL、OPENAI_BASE_URL。兼容服务也支持 BASE_URL 作为 OPENAI_BASE_URL 的别名。
-3. 执行：python -m smallagent "你的编程任务"
-4. 默认会在终端实时展示每轮 `Agent 状态汇总（Perception / Planning / Memory）`、`模型行动提案与本地决策（Action Proposal / Decision）`、`工具执行观察（Tool Observation）`、`人工安全确认（Human Approval）` 和 `Final 验收决策（Completion Check）` 等分隔块，突出感知、规划、记忆、决策和验收；如需关闭过程展示，加 --no-trace。
-5. 如需保存演示记录，加 --history-file tmp/history.json。
-6. 如需保存包含验收标准和结构化证据的完成度报告，加 --report-file tmp/report.json。
-7. 如需连续输入多个任务，执行：python -m smallagent --interactive。
-8. 交互模式也会默认显示同样的过程轨迹；可以同时加 --history-file tmp/interactive-history.json 和 --report-file tmp/interactive-report.json，文件会保存为 JSON 数组，每条任务追加一条记录。
-
-交互式终端：
-进入 --interactive 后，可以连续输入普通任务；每条任务都会走完整的模型、工具、验收闭环。
-终端层会保留最近任务摘要，并在下一条任务开始时注入给 agent，帮助它理解“继续”“它”等上下文指代。
-内置命令包括：
-- /help：查看可用命令。
-- /status：查看当前工作区、模型、接口地址、最大执行轮数、记录文件和已完成任务数。
-- /history：查看本次终端会话内的任务摘要。
-- /clear：清空本次终端会话摘要。
-- /retry：重新执行最近一条任务，适合模型空响应或网络中断后快速重试。
-- /exit 或 /quit：退出交互模式。
-当模型准备执行 run_shell 或 run_recommended_verification 这类高风险工具时，交互式终端会提示是否允许执行；只有输入 y 或 yes 才会继续。
-
-测试：
-python -m unittest discover -s tests -v
-或执行：powershell -ExecutionPolicy Bypass -File scripts/check.ps1
-真实使用前的手动测试清单见 docs/manual-test.md。
+2. 参考 .env.example 配置 OPENAI_API_KEY，可选配置 SMALLAGENT_MODEL、OPENAI_BASE_URL。
+3. 单次任务：python -m smallagent "你的编程任务"
+4. 交互式任务：
+   python -m smallagent --workspace tmp/parking-demo --interactive --history-file tmp/parking-history.json --report-file tmp/parking-report.json
+5. 测试：python -m unittest discover -s tests -v
 
 特色功能：
-SmallAgent 是一个不依赖 LangChain、LlamaIndex、OpenAI Agents SDK 等 agent 框架的简化编程智能体。它用 OpenAI 兼容 Chat Completions 与模型交互，但本地核心逻辑自行实现：终端层支持连续输入多个任务、高风险工具人工确认和默认实时轨迹显示，感知层整理任务和工具观察，规划层维护可解释步骤，记忆层保存短期运行事实，决策层校验模型动作是否可执行，完成度检查层根据任务验收标准、结构化工具证据、工作区快照变化和推荐验证命令复核 final 是否可以停止；当 final 阶段只缺推荐验证时，agent 会自动运行一次推荐命令并重新评估。当前工具包括工作目录、文件列表、读文件、文件元信息、文本搜索、创建目录、写文件、追加文本、按行插入、文本替换、按行替换、单文件 patch、执行命令、Git 状态、Git diff、发现推荐验证和运行推荐验证。代码结构刻意拆成 terminal、agent、perception、planning、memory、decision、completion、tools、verification、model、cli、trace、prompts，便于后续扩展长期记忆、风险分级、自检 harness、更多工具或替换模型提供方。
+SmallAgent 是一个不依赖 LangChain、LlamaIndex、OpenAI Agents SDK 等框架的简化编程智能体。模型只输出 JSON 动作，本地代码负责解析、决策和执行。终端默认展示状态汇总、行动提案、工具观察、人工确认和 final 验收；如需关闭，加 --no-trace。
 
-提交说明：
-已推送历史不改写；中文提交说明见 docs/git-history.md，后续提交信息使用中文。
+Agent 设计组成：
+- CLI/Terminal：解析参数、限制 workspace、支持交互式输入和内置命令。
+- Perception：整理任务、工作区、轮数和最近工具观察。
+- Planning：维护轻量计划，记录执行进展。
+- Memory：保存任务内短期记忆。
+- Model Client：调用 OpenAI 兼容 Chat Completions。
+- Decision Policy：校验 JSON 动作、工具风险和权限。
+- ToolRegistry：执行文件、编辑、shell、Git 和验证工具。
+- Completion Harness：在 final 前检查修改、验证、失败工具和证据是否充分。
+
+其它说明：
+API key 只从环境变量或未入库的 .env 读取。history/report 保存运行轨迹和验收证据。完整设计图见 docs/design.md，演示脚本见 docs/demo.md。

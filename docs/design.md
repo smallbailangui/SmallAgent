@@ -17,6 +17,25 @@ SmallAgent 故意保持小而清晰，方便在面试中解释每一个关键环
 11. 如果动作是最终回答，`smallagent.completion` 先根据任务验收标准和工具轨迹执行完成度检查。
 12. 完成度检查通过，或达到步数上限，循环停止；未通过时把 `SELF_CHECK` 反馈给模型继续补证据。
 
+## 运行流程图
+
+```mermaid
+flowchart TD
+    U["用户任务<br/>CLI / Interactive"] --> A["Agent Loop<br/>CodingAgent.run"]
+    A --> S["状态汇总<br/>Perception / Planning / Memory / Criteria"]
+    S --> M["模型调用<br/>Chat Completions"]
+    M --> D{"JSON Action<br/>Decision Policy"}
+    D -->|tool| R{"高风险命令?"}
+    R -->|否| T["本地工具<br/>Files / Shell / Git"]
+    R -->|是| H["Human Approval<br/>用户确认"]
+    H --> T
+    T --> O["Observation<br/>结果 + 证据"]
+    O --> S
+    D -->|final| C{"Completion Check<br/>final 验收"}
+    C -->|未通过| S
+    C -->|通过| F["最终总结<br/>修改 + 验证"]
+```
+
 ## 交互式终端
 
 `smallagent.terminal` 是单次任务 agent 外面的一层 REPL 外壳。它的职责是管理终端输入输出、本次会话摘要、交互式 history/report 记录，不直接做模型推理，也不直接执行文件工具。
